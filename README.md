@@ -1,11 +1,17 @@
 # ironkey
 
-Unlock Kingston IronKey Locker+ G2 encrypted USB drives on Linux, without
-root and without Python.
+Unlock, reset, format and manage Kingston IronKey Locker+ G2 encrypted USB
+drives on Linux — without root (for the common path) and without Python.
 
-Kingston only ships unlock software for Windows and macOS. This project is a
-C++ rewrite of [ironkey-unlocker](https://github.com/wltechblog/ironkey-unlocker),
-the Python tool that first made these drives usable on Linux.
+Kingston only ships management software for Windows and macOS. This project
+began as a C++ rewrite of
+[ironkey-unlocker](https://github.com/wltechblog/ironkey-unlocker), the Python
+tool that first made these drives *unlockable* on Linux, and grew into a fuller
+management tool: forgot-password reset, passphrase mode, owner-info read/write,
+filesystem creation, and an optional replug-free SCSI path — each
+reverse-engineered for this project (unlock's byte-level protocol is in
+[PROTOCOL.md](PROTOCOL.md); the newer findings are described below and in the
+commit history).
 
 > This tool does not let anyone read the data on a lost or stolen *locked*
 > drive without its password — the at-rest encryption is unaffected. It gives
@@ -69,6 +75,13 @@ Mounted volumes are released through udisks instead of `umount`.
 This also means the password never has to be handed to a privileged daemon.
 The process that asks for it is the one that talks to the device.
 
+The one exception is the optional **SCSI path** (`reset --scsi`): sending the
+vendor opcode `0xFF` over `SG_IO` requires `CAP_SYS_RAWIO`, which a udev rule
+cannot grant. That path uses a tiny `ironkey-scsi-helper` installed with
+`setcap cap_sys_rawio+ep`; it does nothing but relay `SG_IO`, so the main tool
+and the password still stay unprivileged. Everything else — unlock, lock,
+change-password, reset over HID, info, format — needs no setcap.
+
 ### Multiple devices
 
 The Python script always used the *first* match it found: the first Kingston
@@ -112,8 +125,10 @@ port, and only those nodes are touched. If several drives are connected,
 - **Secrets in memory.** The host RSA private key, the session key, the
   password and intermediate values are wiped with `OPENSSL_cleanse` after use.
 
-The protocol itself is unchanged: the same commands, parameters and crypto,
-byte for byte.
+For **unlock**, the protocol is unchanged: the same commands, parameters and
+crypto, byte for byte ([PROTOCOL.md](PROTOCOL.md)). The other operations
+(reset, passphrase, owner info, format, the SCSI path) are new to this project
+and were reverse-engineered separately — see the Status section.
 
 ### Verified against the original
 
@@ -141,26 +156,57 @@ the agent's hotplug handling in `--dry-run` mode.
 
 | Feature | State |
 |---|---|
-| Unlock (admin / user password) | done, hardware-verified |
+| Unlock (admin / user password, or passphrase) | done, hardware-verified |
 | Lock (unmount + power off, which re-locks the drive) | done, hardware-verified |
 | Multi-device (several IronKeys at once, matched by USB port) | done |
 | Session agent (auto-prompt on insert, notifications) | done; hotplug verified, agent unlock path verified |
 | Failed-login counter shown before/after unlock (admin account) | done |
 | Change password in place (`FF A6` / `FF A8`) | done, hardware-verified |
-| Reset / forgot-password (crypto-erase + set new password) | done, hardware-verified (one replug needed, see below) |
+| Reset / forgot-password (crypto-erase + set new password) | done, hardware-verified |
+| Passphrase mode (up to 64 characters) | done, hardware-verified |
+| Owner info — read & write name / company / hints (`info`, `reset --…`) | done, hardware-verified |
+| Create a filesystem on the data disk (`format`, vfat/exfat/ext4) | done, hardware-verified |
+| SCSI transport + replug-free reset (privileged helper) | done, hardware-verified |
 | Debian package | todo |
 | CI builds for amd64 / arm64 | todo |
+
+Several features beyond the original unlock were reverse-engineered for this
+project, from the macOS vendor binary (which ships with full C++ symbols) and
+fresh USB captures:
 
 **Reset / forgot-password** (`ironkey-unlock reset`) wipes the drive and sets a
 brand-new password without needing the old one. The password is set by the
 `FF A2` *Configure* token (the password AES-encrypted under the session key,
 with the re-key flag for the crypto-erase) — `FF A4` is only a login, never a
-setter. Three fixed `FF 07` region-prep commands after the commit restore the
-data-partition geometry. The drive applies the new layout on a
-**power cycle**, so after `reset` you unplug/replug the drive once, unlock with
-the new password (the full-size blank data disk appears), then create a
-filesystem with `mkfs`. Passphrase mode (10–64 characters) is not supported;
-only complex passwords up to 16 bytes.
+setter; three fixed `FF 07` region-prep commands restore the partition
+geometry. The drive applies the new layout on a **power cycle**. Over the
+default HID path that means one physical unplug/replug after `reset`; with the
+SCSI path (below) it is done in software, so the whole flow is hands-off.
+
+**Passphrase mode** — passwords may be up to 64 characters. The device stores
+the first 32 characters and, at login, verifies the first 16 (one AES block);
+no hashing is involved. `unlock`, `reset` and `change-password` accept them.
+
+**Owner info** — the drive stores a contact profile (name, company,
+description, and the admin/user password *hints*) in its protected hidden area,
+AES-ECB-encrypted under a fixed key and reachable through the factory session.
+`ironkey-unlock info` prints it **without unlocking**; `reset --name … --company
+… --admin-hint …` writes it. Note the security implication: the hints travel
+with the drive and are readable before unlock on any machine.
+
+**Format** — `ironkey-unlock format --fs vfat|exfat|ext4 [--label NAME]`
+creates a filesystem on an unlocked drive's data disk through udisks (polkit,
+no root); `ext4` is made owned by the invoking user.
+
+**SCSI transport (replug-free reset)** — the vendor commands can run over
+`SG_IO` instead of HID, keeping the drive in storage mode. That lets `reset
+--scsi` issue `FF 01` (a soft power-cycle) to re-enumerate the drive in
+software, so no physical replug is needed: `reset --scsi` → `unlock` →
+`format`, hands-off. Sending opcode `0xFF` over `SG_IO` needs `CAP_SYS_RAWIO`,
+which a udev rule cannot grant, so this path uses a tiny privileged helper
+(`ironkey-scsi-helper`, installed with `setcap cap_sys_rawio+ep`) that does
+nothing but relay `SG_IO`; the main tool stays unprivileged. HID remains the
+zero-setup default.
 
 ## Building
 
@@ -214,12 +260,22 @@ ironkey-unlock unlock [--device PORT]      # prompt for the password and unlock
 ironkey-unlock unlock --user               # log in with the user password (admin+user drives)
 ironkey-unlock unlock --password-stdin     # read the password from stdin (scripts)
 ironkey-unlock change-password             # change a password in place (admin or --user)
+ironkey-unlock reset                       # forgot-password: ERASE and set a new password
+ironkey-unlock reset --name N --company C --admin-hint H   # also store owner info
+ironkey-unlock reset --scsi                # reset with no physical replug (needs the helper)
+ironkey-unlock info                        # show owner info (name/company/hints), no unlock
+ironkey-unlock format --fs ext4 --label X  # create a filesystem on the unlocked data disk
 ironkey-unlock lock [--device PORT]        # unmount and power off, which locks the drive
 ironkey-unlock hid-mode  [--device PORT]   # switch a locked drive to HID mode
 ironkey-unlock handshake [--device PORT]   # diagnostic: key exchange only, no password sent
 ```
 
 `--device PORT` is needed only when more than one IronKey is connected.
+
+After a plain `reset`, unplug/replug the drive once (the device applies its new
+layout on a power cycle), then `unlock` and `format`. `reset --scsi` does that
+power-cycle in software (`FF 01`), so no replug is needed — it requires the
+privileged helper (see the SCSI section under Status).
 
 `lock` does the same as **Eject** in a file manager. It unmounts the drive's
 data partitions and CD-ROM, then asks udisks to power it off. The drive locks
