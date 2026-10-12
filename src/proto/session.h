@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #pragma once
 
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -108,6 +109,33 @@ void change_password(HidDevice& dev, std::string_view old_password, std::string_
 // Set a password with no prior password (FF A5, then 8B/8F/A4/89), as used
 // after a re-key during reset/initialize. The drive must be in HID mode.
 void set_password(HidDevice& dev, std::string_view new_password, Account account = Account::Admin);
+
+// Owner / contact info the vendor stores in the drive's protected hidden area
+// (the "IKVP" page). It is AES-ECB-encrypted under a fixed key and reachable
+// through the factory PVC0 session, so it can be read and written WITHOUT the
+// drive password. The password hints therefore travel with the drive and are
+// readable pre-unlock — see PROTOCOL.md.
+struct Profile {
+    std::string admin_hint;
+    std::string user_hint;
+    std::string name;
+    std::string company;
+    std::string description;
+
+    bool empty() const
+    {
+        return admin_hint.empty() && user_hint.empty() && name.empty() && company.empty() &&
+               description.empty();
+    }
+};
+
+// Reads the owner profile (PVC0 session, FF 63 page 0x0D, decrypt). Returns an
+// empty Profile if the page has no IKVP header. No password needed; HID mode.
+Profile read_profile(HidDevice& dev);
+
+// Writes the owner profile (PVC0 session, FF 62 pages 0x0D/0x0E). Overwrites
+// all fields. No password needed; HID mode.
+void write_profile(HidDevice& dev, const Profile& profile);
 
 // Replays FF 62 "write protected page" commands (the vendor Format step that
 // activates the data partition after a reset). Each entry is (page_index,

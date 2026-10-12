@@ -108,8 +108,12 @@ void set_password_device(UsbDevice& dev, std::string_view new_password, const Lo
 // Full factory reset: wipes the drive (crypto-erase, DESTROYS ALL DATA) and
 // sets a new single/admin password. The drive must be in HID mode; no old
 // password is needed. Create a filesystem afterwards with mkfs.
-void reset_device_full(UsbDevice& dev, std::string_view new_password, const Log& log,
-                       bool trace = false);
+void reset_device_full(UsbDevice& dev, std::string_view new_password, const Profile& profile,
+                       const Log& log, bool trace = false);
+
+// Reads the owner profile (name/company/description/hints) without unlocking.
+// The drive must be in HID mode.
+Profile read_profile_device(UsbDevice& dev, const Log& log, bool trace = false);
 
 // Re-keys the data area (the crypto-erase step of reset/initialize). Reads the
 // area size, runs a handshake, and sends FF 8B/8F/A2. Returns the FF A2 status

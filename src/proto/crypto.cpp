@@ -141,6 +141,27 @@ Key128 aes128_ecb_encrypt(const Key128& key, ByteView block)
     return out;
 }
 
+Bytes aes128_ecb_decrypt(const Key128& key, ByteView data)
+{
+    if (data.size() % 16 != 0)
+        throw CryptoError("AES-ECB input must be a multiple of 16 bytes");
+
+    CipherCtx ctx(EVP_CIPHER_CTX_new());
+    if (!ctx)
+        fail("EVP_CIPHER_CTX_new");
+    if (EVP_DecryptInit_ex(ctx.get(), EVP_aes_128_ecb(), nullptr, key.data(), nullptr) != 1)
+        fail("EVP_DecryptInit_ex");
+    EVP_CIPHER_CTX_set_padding(ctx.get(), 0);
+
+    Bytes out(data.size());
+    int len = 0;
+    if (EVP_DecryptUpdate(ctx.get(), out.data(), &len, data.data(),
+                          static_cast<int>(data.size())) != 1)
+        fail("EVP_DecryptUpdate");
+    out.resize(static_cast<size_t>(len));
+    return out;
+}
+
 std::array<uint8_t, 32> sha256(ByteView data)
 {
     std::array<uint8_t, 32> out{};

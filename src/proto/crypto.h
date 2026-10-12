@@ -50,6 +50,8 @@ struct RsaKey {
 Bytes mod_exp_le(ByteView base, ByteView exp, ByteView mod, size_t out_len = 64);
 
 Key128 aes128_ecb_encrypt(const Key128& key, ByteView block);
+// Decrypts one or more 16-byte blocks (AES-128-ECB, no padding).
+Bytes aes128_ecb_decrypt(const Key128& key, ByteView data);
 std::array<uint8_t, 32> sha256(ByteView data);
 
 }  // namespace ironkey

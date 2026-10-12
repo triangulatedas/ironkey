@@ -419,7 +419,7 @@ int cmd_reset_selftest(const std::string& port)
         pw += charset[b % (sizeof charset - 1)];
 
     std::printf("Self-test: resetting with generated password: %s\n", pw.c_str());
-    reset_device_full(dev, pw, print_log, /*trace=*/false);
+    reset_device_full(dev, pw, Profile{}, print_log, /*trace=*/false);
 
     // The drive applies its new area layout on a power cycle, so the data disk
     // only presents after a replug. We cannot replug from here, so the self-test
@@ -433,9 +433,36 @@ int cmd_reset_selftest(const std::string& port)
     return 0;
 }
 
+// Reads the owner profile (name/company/description/hints) without unlocking.
+int cmd_info(const std::string& port)
+{
+    UsbDevice dev;
+    if (!select_device(port, dev))
+        return 1;
+    check_access(dev);
+    ensure_hid_mode(dev, print_log);
+    Profile p = read_profile_device(dev, print_log);
+    if (p.empty()) {
+        std::printf("No owner info set on %s.\n", describe(dev).c_str());
+        return 0;
+    }
+    auto line = [](const char* label, const std::string& v) {
+        if (!v.empty())
+            std::printf("  %-12s %s\n", label, v.c_str());
+    };
+    std::printf("Owner info on %s:\n", describe(dev).c_str());
+    line("Name:", p.name);
+    line("Company:", p.company);
+    line("Description:", p.description);
+    line("Admin hint:", p.admin_hint);
+    line("User hint:", p.user_hint);
+    std::printf("(Readable without the password; stored on the drive.)\n");
+    return 0;
+}
+
 // Factory reset / forgot-password recovery: wipes the drive (crypto-erase) and
 // sets a brand-new password. No old password needed.
-int cmd_reset(const std::string& port, bool password_stdin)
+int cmd_reset(const std::string& port, bool password_stdin, const Profile& profile)
 {
     UsbDevice dev;
     if (!select_device(port, dev))
@@ -474,7 +501,7 @@ int cmd_reset(const std::string& port, bool password_stdin)
         return 1;
     }
 
-    reset_device_full(dev, new_pw.value, print_log, /*trace=*/false);
+    reset_device_full(dev, new_pw.value, profile, print_log, /*trace=*/false);
     std::printf(
         "\nReset complete: the drive was wiped and the new password set.\n"
         "\nNext steps:\n"
@@ -501,9 +528,12 @@ void usage()
         "  change-password [--admin|--user]\n"
         "                             Change a password in place (prompts for current and\n"
         "                             new). Does not unlock the drive.\n"
-        "  reset                      Forgot-password recovery: ERASE the drive and set a\n"
-        "                             new password (no old password needed). Replug and\n"
-        "                             format afterwards.\n"
+        "  reset [--name N] [--company C] [--description D]\n"
+        "        [--admin-hint H] [--user-hint H]\n"
+        "                             Forgot-password recovery: ERASE the drive and set a\n"
+        "                             new password (no old password needed). Optional owner\n"
+        "                             info is stored on the drive. Replug and format after.\n"
+        "  info                       Show owner info (name/company/hint) without unlocking\n"
         "  lock                       Unmount and power off an unlocked drive, which\n"
         "                             locks it (same as Eject in a file manager)\n"
         "  hid-mode                   Switch a locked drive to HID mode\n"
@@ -525,12 +555,27 @@ int main(int argc, char** argv)
     bool trace = false;
     std::optional<Account> account;  // chosen from the drive's setup unless given
     bool with_session = true;
+    Profile profile;  // owner info for `reset`
     for (int i = 2; i < argc; ++i) {
         std::string_view arg = argv[i];
         if (arg == "--device" && i + 1 < argc) {
             port = argv[++i];
         } else if (arg == "--password-stdin" && (cmd == "unlock" || cmd == "reset")) {
             password_stdin = true;
+        } else if (cmd == "reset" && i + 1 < argc &&
+                   (arg == "--name" || arg == "--company" || arg == "--description" ||
+                    arg == "--admin-hint" || arg == "--user-hint")) {
+            std::string_view val = argv[++i];
+            if (arg == "--name")
+                profile.name = val;
+            else if (arg == "--company")
+                profile.company = val;
+            else if (arg == "--description")
+                profile.description = val;
+            else if (arg == "--admin-hint")
+                profile.admin_hint = val;
+            else
+                profile.user_hint = val;
         } else if (arg == "--trace" && cmd == "unlock") {
             trace = true;
         } else if (arg == "--trace" &&
@@ -562,9 +607,11 @@ int main(int argc, char** argv)
         if (cmd == "reset-probe")
             return cmd_reset_probe(port);
         if (cmd == "reset")
-            return cmd_reset(port, password_stdin);
+            return cmd_reset(port, password_stdin, profile);
         if (cmd == "reset-selftest")
             return cmd_reset_selftest(port);
+        if (cmd == "info")
+            return cmd_info(port);
         if (cmd == "format-replay")
             return cmd_format_replay(port);
         if (cmd == "lock")

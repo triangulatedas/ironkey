@@ -386,6 +386,117 @@ void set_password(HidDevice& dev, std::string_view new_password, Account account
     secure_wipe(shared.data(), shared.size());
 }
 
+namespace {
+
+// Fixed AES-128-ECB key for the owner-profile ("IKVP") page, lifted from the
+// vendor app (MyAes default key). Profile text, not a credential.
+const Key128 kProfileKey = {0x50, 0x44, 0x4d, 0x47, 0xfe, 0x87, 0x31, 0x30,
+                            0xb9, 0x61, 0x88, 0x45, 0x02, 0xc6, 0x78, 0x20};
+constexpr size_t kProfilePageLen = 0x200;    // 512-byte page
+constexpr size_t kProfileFieldStart = 0x0f;  // first field offset
+constexpr size_t kProfileSlot = 0x60;        // 96 bytes per field, NUL-terminated
+// Field order in the page: admin hint, user hint, name, company, description.
+
+std::string read_profile_slot(ByteView page, size_t idx)
+{
+    size_t off = kProfileFieldStart + idx * kProfileSlot;
+    size_t end = off;
+    while (end < off + kProfileSlot && end < page.size() && page[end] != 0)
+        ++end;
+    return std::string(reinterpret_cast<const char*>(page.data()) + off, end - off);
+}
+
+void write_profile_slot(Bytes& page, size_t idx, std::string_view s)
+{
+    size_t off = kProfileFieldStart + idx * kProfileSlot;
+    size_t n = std::min(s.size(), kProfileSlot - 1);  // keep the NUL terminator
+    std::copy_n(s.begin(), n, page.begin() + off);
+}
+
+Bytes profile_ecb(ByteView data, bool encrypt)
+{
+    if (!encrypt)
+        return aes128_ecb_decrypt(kProfileKey, data);
+    Bytes out;
+    out.reserve(data.size());
+    for (size_t i = 0; i < data.size(); i += 16) {
+        std::array<uint8_t, 16> blk{};
+        std::copy_n(data.begin() + i, 16, blk.begin());
+        Key128 e = aes128_ecb_encrypt(kProfileKey, blk);
+        out.insert(out.end(), e.begin(), e.end());
+    }
+    return out;
+}
+
+// Opens the factory PVC0 secure session (no password) used for the protected
+// hidden area.
+Key128 open_pvc0(Channel& ch, Random& rng)
+{
+    RsaKey host = RsaKey::generate512();
+    Key128 shared = rsa_handshake(ch, rng, host);
+    Bytes pvc = encrypt_pvc_key(kPvc0Key, shared, rng.bytes(32));
+    ch.command(0x8B, 0x00, Direction::None, {}, 0, {0x00, 0x03});
+    ch.command(0x8F, 0x00, Direction::Write, pvc, 0, {0x02});
+    return shared;
+}
+
+}  // namespace
+
+Profile read_profile(HidDevice& dev)
+{
+    Channel ch(dev);
+    SystemRandom rng;
+    ch.drain();
+    Key128 shared = open_pvc0(ch, rng);
+    // FF 63: read protected page 0x0D ("rick" page key).
+    Bytes enc = ch.command(0x63, 0x00, Direction::Read, {}, kProfilePageLen,
+                           {0x0d, 0x00, 0x72, 0x69, 0x63, 0x6b, 0x00, 0x00});
+    secure_wipe(shared.data(), shared.size());
+    if (enc.size() < kProfilePageLen)
+        throw IronKeyError("Short profile page (FF 63)");
+    Bytes page = profile_ecb(ByteView(enc.data(), kProfilePageLen), /*encrypt=*/false);
+    Profile p;
+    if (page.size() < 4 || page[0] != 'I' || page[1] != 'K' || page[2] != 'V' || page[3] != 'P')
+        return p;  // no profile set
+    p.admin_hint = read_profile_slot(page, 0);
+    p.user_hint = read_profile_slot(page, 1);
+    p.name = read_profile_slot(page, 2);
+    p.company = read_profile_slot(page, 3);
+    p.description = read_profile_slot(page, 4);
+    return p;
+}
+
+void write_profile(HidDevice& dev, const Profile& profile)
+{
+    Channel ch(dev);
+    SystemRandom rng;
+    ch.drain();
+    Key128 shared = open_pvc0(ch, rng);
+
+    // IKVP header: magic, version 1, account count (1), constant tail. We write
+    // all slots zero-padded (the vendor leaks heap bytes after the NUL; we do
+    // not).
+    uint8_t ac = profile.user_hint.empty() ? 0x01 : 0x02;
+    Bytes page(kProfilePageLen, 0);
+    const uint8_t header[] = {'I', 'K', 'V', 'P', 0x01, 0x00, 0x00, ac,
+                              0x00, 0x00, 0x00, ac, 0x00, 0x01, 0x00};
+    std::copy(std::begin(header), std::end(header), page.begin());
+    write_profile_slot(page, 0, profile.admin_hint);
+    write_profile_slot(page, 1, profile.user_hint);
+    write_profile_slot(page, 2, profile.name);
+    write_profile_slot(page, 3, profile.company);
+    write_profile_slot(page, 4, profile.description);
+
+    Bytes enc0d = profile_ecb(page, /*encrypt=*/true);
+    ch.command(0x62, 0x00, Direction::Write, enc0d, kProfilePageLen,
+               {0x0d, 0x00, 0x72, 0x69, 0x63, 0x6b, 0x00, 0x00});
+    // Page 0x0E is reserved zeros.
+    Bytes enc0e = profile_ecb(Bytes(kProfilePageLen, 0), /*encrypt=*/true);
+    ch.command(0x62, 0x00, Direction::Write, enc0e, kProfilePageLen,
+               {0x0e, 0x00, 0x72, 0x69, 0x63, 0x6b, 0x00, 0x00});
+    secure_wipe(shared.data(), shared.size());
+}
+
 void write_protected_pages(HidDevice& dev, const std::vector<std::pair<uint8_t, Bytes>>& pages)
 {
     Channel ch(dev);
