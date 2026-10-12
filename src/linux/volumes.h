@@ -19,4 +19,11 @@ std::vector<std::string> release_volumes(const UsbDevice& dev);
 // busy or the power-off fails.
 void power_off_drive(const UsbDevice& dev);
 
+// Creates a filesystem on the drive's unlocked data disk via udisks (polkit, no
+// root). `fstype` is "vfat", "exfat" or "ext4". DESTROYS the disk's contents.
+// Returns the formatted node. Throws IronKeyError (with udisks' message) on
+// failure, e.g. if not authorized or the disk is busy.
+std::string format_data_disk(const UsbDevice& dev, const std::string& fstype,
+                             const std::string& label);
+
 }  // namespace ironkey

@@ -14,6 +14,7 @@
 #include "linux/device_ops.h"
 #include "linux/hidraw_device.h"
 #include "linux/usb_topology.h"
+#include "linux/volumes.h"
 #include "proto/session.h"
 #include "proto/tracing_device.h"
 
@@ -399,6 +400,34 @@ int cmd_lock(const std::string& port)
     return 0;
 }
 
+// Creates a filesystem on an unlocked drive's data disk (via udisks, no root).
+int cmd_format(const std::string& port, const std::string& fstype, const std::string& label)
+{
+    if (fstype != "vfat" && fstype != "exfat" && fstype != "ext4") {
+        std::fprintf(stderr, "Unknown --fs '%s'. Use vfat, exfat or ext4.\n", fstype.c_str());
+        return 2;
+    }
+    std::vector<UsbDevice> unlocked;
+    for (auto& d : find_kingston_devices())
+        if (d.is_ironkey() && d.is_unlocked() && (port.empty() || d.port == port))
+            unlocked.push_back(std::move(d));
+    if (unlocked.empty()) {
+        std::fprintf(stderr, "No unlocked IronKey found. Unlock the drive first.\n");
+        return 1;
+    }
+    if (unlocked.size() > 1) {
+        std::fprintf(stderr, "Several IronKeys are unlocked; choose one with --device PORT.\n");
+        return 1;
+    }
+    UsbDevice dev = std::move(unlocked.front());
+    std::printf("Formatting the data disk of %s as %s (label '%s'). This erases it.\n",
+                describe(dev).c_str(), fstype.c_str(), label.c_str());
+    std::string node = format_data_disk(dev, fstype, label);
+    std::printf("Done. %s is now a %s filesystem; eject with `ironkey-unlock lock`.\n",
+                node.c_str(), fstype.c_str());
+    return 0;
+}
+
 // Diagnostic: reset with a random password, then unlock with the SAME string,
 // all programmatically. Removes human typing error from the test loop. The
 // random password is shown so the drive stays usable afterwards.
@@ -534,6 +563,9 @@ void usage()
         "                             new password (no old password needed). Optional owner\n"
         "                             info is stored on the drive. Replug and format after.\n"
         "  info                       Show owner info (name/company/hint) without unlocking\n"
+        "  format [--fs vfat|exfat|ext4] [--label NAME]\n"
+        "                             Create a filesystem on an unlocked drive's data disk\n"
+        "                             (via udisks, no root). Default vfat, label IRONKEY.\n"
         "  lock                       Unmount and power off an unlocked drive, which\n"
         "                             locks it (same as Eject in a file manager)\n"
         "  hid-mode                   Switch a locked drive to HID mode\n"
@@ -555,11 +587,17 @@ int main(int argc, char** argv)
     bool trace = false;
     std::optional<Account> account;  // chosen from the drive's setup unless given
     bool with_session = true;
-    Profile profile;  // owner info for `reset`
+    Profile profile;             // owner info for `reset`
+    std::string fstype = "vfat"; // for `format`
+    std::string label = "IRONKEY";
     for (int i = 2; i < argc; ++i) {
         std::string_view arg = argv[i];
         if (arg == "--device" && i + 1 < argc) {
             port = argv[++i];
+        } else if (cmd == "format" && arg == "--fs" && i + 1 < argc) {
+            fstype = argv[++i];
+        } else if (cmd == "format" && arg == "--label" && i + 1 < argc) {
+            label = argv[++i];
         } else if (arg == "--password-stdin" && (cmd == "unlock" || cmd == "reset")) {
             password_stdin = true;
         } else if (cmd == "reset" && i + 1 < argc &&
@@ -612,6 +650,8 @@ int main(int argc, char** argv)
             return cmd_reset_selftest(port);
         if (cmd == "info")
             return cmd_info(port);
+        if (cmd == "format")
+            return cmd_format(port, fstype, label);
         if (cmd == "format-replay")
             return cmd_format_replay(port);
         if (cmd == "lock")

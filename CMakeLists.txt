@@ -38,7 +38,7 @@ add_library(ironkey_linux STATIC
     src/linux/device_ops.cpp
     src/linux/udev_monitor.cpp
 )
-target_link_libraries(ironkey_linux PUBLIC ironkey_proto PRIVATE PkgConfig::UDEV)
+target_link_libraries(ironkey_linux PUBLIC ironkey_proto PRIVATE PkgConfig::UDEV PkgConfig::SYSTEMD)
 target_compile_options(ironkey_linux PRIVATE ${IRONKEY_WARNINGS})
 
 add_executable(ironkey-unlock src/cli/main.cpp)

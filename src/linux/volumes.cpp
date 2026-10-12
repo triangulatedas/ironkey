@@ -6,7 +6,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <systemd/sd-bus.h>
+
 #include <cerrno>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -143,6 +146,66 @@ void power_off_drive(const UsbDevice& dev)
             &err) != 0)
         throw IronKeyError("Could not power off " + dev.disks.front().node +
                            (err.empty() ? "" : ": " + err));
+}
+
+std::string format_data_disk(const UsbDevice& dev, const std::string& fstype,
+                             const std::string& label)
+{
+    const BlockDevice* disk = nullptr;
+    for (const auto& d : dev.disks)
+        if (d.size_bytes > 0) {
+            disk = &d;
+            break;
+        }
+    if (!disk)
+        throw IronKeyError("No unlocked data disk to format. Unlock the drive first.");
+
+    // Format replaces the whole device, so clear any mounts first.
+    for (const auto& node : with_partitions(disk->node))
+        if (is_mounted(node))
+            run({"udisksctl", "unmount", "--no-user-interaction", "-b", node});
+
+    std::string obj =
+        "/org/freedesktop/UDisks2/block_devices/" + disk->node.substr(disk->node.rfind('/') + 1);
+
+    sd_bus* bus = nullptr;
+    int rc = sd_bus_open_system(&bus);
+    if (rc < 0)
+        throw IronKeyError(std::string("Cannot reach udisks (system bus): ") + std::strerror(-rc));
+
+    sd_bus_error error = SD_BUS_ERROR_NULL;
+    sd_bus_message* m = nullptr;
+    sd_bus_message* reply = nullptr;
+    auto cleanup = [&] {
+        sd_bus_error_free(&error);
+        sd_bus_message_unref(m);
+        sd_bus_message_unref(reply);
+        sd_bus_flush_close_unref(bus);
+    };
+
+    // Block.Format(type 's', options 'a{sv}'): no partition table, filesystem
+    // on the whole device — the same as mkfs on /dev/sdX.
+    rc = sd_bus_message_new_method_call(bus, &m, "org.freedesktop.UDisks2", obj.c_str(),
+                                        "org.freedesktop.UDisks2.Block", "Format");
+    if (rc >= 0)
+        rc = sd_bus_message_append(m, "s", fstype.c_str());
+    if (rc >= 0)
+        rc = sd_bus_message_open_container(m, 'a', "{sv}");
+    if (rc >= 0 && !label.empty())
+        rc = sd_bus_message_append(m, "{sv}", "label", "s", label.c_str());
+    if (rc >= 0 && fstype == "ext4")  // make the new fs owned by the invoking user
+        rc = sd_bus_message_append(m, "{sv}", "take-ownership", "b", 1);
+    if (rc >= 0)
+        rc = sd_bus_message_close_container(m);
+    if (rc >= 0)
+        rc = sd_bus_call(bus, m, 0, &error, &reply);
+    if (rc < 0) {
+        std::string msg = error.message ? error.message : std::strerror(-rc);
+        cleanup();
+        throw IronKeyError("Format failed: " + msg);
+    }
+    cleanup();
+    return disk->node;
 }
 
 }  // namespace ironkey
