@@ -147,19 +147,20 @@ the agent's hotplug handling in `--dry-run` mode.
 | Session agent (auto-prompt on insert, notifications) | done; hotplug verified, agent unlock path verified |
 | Failed-login counter shown before/after unlock (admin account) | done |
 | Change password in place (`FF A6` / `FF A8`) | done, hardware-verified |
-| Reset / initialize (crypto-erase + set password) | **in progress** — the area re-key works, but setting the password needs the exact `FF A2` token, under analysis (see below) |
+| Reset / forgot-password (crypto-erase + set new password) | done, hardware-verified (one replug needed, see below) |
 | Debian package | todo |
 | CI builds for amd64 / arm64 | todo |
 
-**Reset / initialize** is the one hard remaining piece. The crypto-erase
-(re-keying the data area, `FF A2`) is validated on hardware, but afterwards the
-new password does not take: `FF A4` *verifies* instead of *setting*, because
-the `FF A2` token must encode the provisioning state and cannot simply be a
-random key. Recovering the token's real contents requires decrypting a vendor
-capture, which — thanks to the weak key generation described below — is
-actually feasible; work is ongoing. Until then, use the vendor's Windows
-"Reset Device" for factory reset. Passphrase mode (10–64 characters) is also
-not supported; only complex passwords up to 16 bytes.
+**Reset / forgot-password** (`ironkey-unlock reset`) wipes the drive and sets a
+brand-new password without needing the old one. The password is set by the
+`FF A2` *Configure* token (the password AES-encrypted under the session key,
+with the re-key flag for the crypto-erase) — `FF A4` is only a login, never a
+setter. Three fixed `FF 07` region-prep commands after the commit restore the
+data-partition geometry. The drive applies the new layout on a
+**power cycle**, so after `reset` you unplug/replug the drive once, unlock with
+the new password (the full-size blank data disk appears), then create a
+filesystem with `mkfs`. Passphrase mode (10–64 characters) is not supported;
+only complex passwords up to 16 bytes.
 
 ## Building
 
