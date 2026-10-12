@@ -121,9 +121,27 @@ void send_unlock(Channel& ch, const Key128& shared, std::string_view password, R
     Key128 encrypted_pw = aes128_ecb_encrypt(shared, plaintext);
     secure_wipe(plaintext.data(), plaintext.size());
     ch.command(0xA4, 0x00, Direction::Write, encrypted_pw, 16, {0x00, 0x00, 0x00, 0x06});
+    // Status stays 0 for a wrong password; byte 6 of the report is set instead.
+    bool rejected = ch.last_status.size() > 6 && ch.last_status[6] != 0;
 
-    // FF 89: commit
+    // FF 89: commit. Sent either way, matching the sequence verified on
+    // hardware for both outcomes.
     ch.command(0x89, 0x00, Direction::None);
+
+    if (rejected)
+        throw WrongPasswordError("Wrong password");
+}
+
+AreaParams read_area_params(Channel& ch)
+{
+    AreaParams p;
+    p.raw = ch.command(0xA0, 0x00, Direction::Read, {}, 0x200);
+    if (p.raw.size() < 0x10)
+        throw IronKeyError("Short GetAreaParams reply");
+    p.data_sectors = p.raw[0] | p.raw[1] << 8 | p.raw[2] << 16 | uint32_t(p.raw[3]) << 24;
+    p.unlocked = p.raw[0x08] != 0;
+    p.failed_attempts = p.raw[0x0C];
+    return p;
 }
 
 void unlock(HidDevice& dev, std::string_view password)

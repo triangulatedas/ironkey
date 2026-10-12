@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // ironkey-unlock: command-line front end.
+#include <fcntl.h>
+#include <termios.h>
 #include <unistd.h>
 
 #include <cstdio>
 #include <string>
 #include <string_view>
 
+#include "linux/device_ops.h"
 #include "linux/hidraw_device.h"
 #include "linux/usb_topology.h"
-#include "linux/usbfs.h"
-#include "linux/volumes.h"
 #include "proto/session.h"
+#include "proto/tracing_device.h"
 
 using namespace ironkey;
 
@@ -28,6 +30,53 @@ std::string human_size(uint64_t bytes)
         return "empty";
     std::snprintf(buf, sizeof buf, "%.1f GiB", static_cast<double>(bytes) / (1ULL << 30));
     return buf;
+}
+
+void print_log(const std::string& msg)
+{
+    std::printf("%s\n", msg.c_str());
+}
+
+// Password string that is wiped when it goes out of scope.
+struct Password {
+    std::string value;
+    Password() { value.reserve(256); }  // avoid reallocations leaving copies behind
+    ~Password() { secure_wipe(value.data(), value.capacity()); }
+};
+
+// Reads a line from the terminal with echo turned off.
+bool read_password_tty(const std::string& prompt, Password& pw)
+{
+    int fd = ::open("/dev/tty", O_RDWR | O_CLOEXEC);
+    if (fd < 0)
+        return false;
+    termios old{};
+    bool have_termios = ::tcgetattr(fd, &old) == 0;
+    if (have_termios) {
+        termios quiet = old;
+        quiet.c_lflag &= ~static_cast<tcflag_t>(ECHO);
+        quiet.c_lflag |= ECHONL;
+        ::tcsetattr(fd, TCSAFLUSH, &quiet);
+    }
+    (void)!::write(fd, prompt.data(), prompt.size());
+
+    char c;
+    while (::read(fd, &c, 1) == 1 && c != '\n')
+        pw.value.push_back(c);
+    secure_wipe(&c, 1);
+
+    if (have_termios)
+        ::tcsetattr(fd, TCSAFLUSH, &old);
+    ::close(fd);
+    return true;
+}
+
+bool read_password_stdin(Password& pw)
+{
+    int c;
+    while ((c = std::getchar()) != EOF && c != '\n')
+        pw.value.push_back(static_cast<char>(c));
+    return !pw.value.empty();
 }
 
 int cmd_list()
@@ -70,39 +119,10 @@ bool select_device(const std::string& port, UsbDevice& out)
     if (keys.size() > 1) {
         std::fprintf(stderr, "Several IronKeys connected; choose one with --device PORT:\n");
         for (const auto& d : keys)
-            std::fprintf(stderr, "  %s  %s  S/N %s\n", d.port.c_str(), d.product.c_str(),
-                         d.serial.c_str());
+            std::fprintf(stderr, "  %s\n", describe(d).c_str());
         return false;
     }
     out = std::move(keys.front());
-    return true;
-}
-
-// Brings the device into HID mode if it is not already there.
-bool ensure_hid_mode(UsbDevice& dev)
-{
-    if (dev.in_hid_mode()) {
-        std::printf("Port %s already in HID mode (%s)\n", dev.port.c_str(), dev.hidraw.front().c_str());
-        return true;
-    }
-    // Check access before touching any mounts.
-    if (::access(dev.usbfs_node.c_str(), R_OK | W_OK) != 0) {
-        std::fprintf(stderr,
-                     "No access to %s. Install packaging/70-ironkey.rules into "
-                     "/etc/udev/rules.d and replug the device (or run as root).\n",
-                     dev.usbfs_node.c_str());
-        return false;
-    }
-    for (const auto& problem : release_volumes(dev))
-        std::fprintf(stderr, "Warning: %s\n", problem.c_str());
-
-    std::printf("Switching port %s to HID mode...\n", dev.port.c_str());
-    trigger_hid_mode(dev);
-    if (!wait_for_hid_mode(dev, std::chrono::seconds(10))) {
-        std::fprintf(stderr, "Device did not come back in HID mode. Try replugging it.\n");
-        return false;
-    }
-    std::printf("HID mode: %04x:%04x, %s\n", dev.vid, dev.pid, dev.hidraw.front().c_str());
     return true;
 }
 
@@ -111,15 +131,18 @@ int cmd_hid_mode(const std::string& port)
     UsbDevice dev;
     if (!select_device(port, dev))
         return 1;
-    return ensure_hid_mode(dev) ? 0 : 1;
+    ensure_hid_mode(dev, print_log);
+    std::printf("%s is in HID mode (%s)\n", describe(dev).c_str(), dev.hidraw.front().c_str());
+    return 0;
 }
 
 // Diagnostic: RSA key exchange only. Sends no password and changes nothing.
 int cmd_handshake(const std::string& port)
 {
     UsbDevice dev;
-    if (!select_device(port, dev) || !ensure_hid_mode(dev))
+    if (!select_device(port, dev))
         return 1;
+    ensure_hid_mode(dev, print_log);
 
     HidrawDevice hid(dev.hidraw.front());
     Channel ch(hid);
@@ -131,11 +154,108 @@ int cmd_handshake(const std::string& port)
     return 0;
 }
 
+// Diagnostic: sends the read-only query commands GetConfig (0x21) and
+// GetAreaParams (0xA0), before and after a key exchange, and dumps every
+// exchange. Sends no password.
+int cmd_dump(const std::string& port, bool with_session)
+{
+    UsbDevice dev;
+    if (!select_device(port, dev))
+        return 1;
+    ensure_hid_mode(dev, print_log);
+    std::printf("%s, %s\n", describe(dev).c_str(), dev.hidraw.front().c_str());
+
+    HidrawDevice hid(dev.hidraw.front());
+    TracingHidDevice traced(hid, [](const std::string& s) { std::fputs(s.c_str(), stdout); });
+    Channel ch(traced);
+    ch.drain();
+
+    auto query = [&ch](uint8_t sub, const char* name) {
+        std::printf("\n=== %s (FF %02X)\n", name, sub);
+        try {
+            ch.command(sub, 0x00, Direction::Read, {}, 0x200);
+        } catch (const std::exception& e) {
+            std::printf("    failed: %s\n", e.what());
+            ch.drain();
+        }
+    };
+
+    std::puts("\n##### Without a session");
+    query(0x21, "GetConfig");
+    query(0xA0, "GetAreaParams");
+
+    if (!with_session)
+        return 0;
+
+    std::puts("\n##### After key exchange");
+    SystemRandom rng;
+    RsaKey host = RsaKey::generate512();
+    Key128 shared = rsa_handshake(ch, rng, host);
+    secure_wipe(shared.data(), shared.size());
+    query(0x21, "GetConfig");
+    query(0xA0, "GetAreaParams");
+    return 0;
+}
+
+int cmd_unlock(const std::string& port, bool password_stdin, bool trace)
+{
+    UsbDevice dev;
+    if (!select_device(port, dev))
+        return 1;
+    if (dev.is_unlocked()) {
+        std::printf("%s is already unlocked.\n", describe(dev).c_str());
+        return 0;
+    }
+    check_access(dev);
+
+    // Switch first so the failed-attempt count can be shown before the prompt.
+    // A locked drive in HID mode is harmless; replugging returns it to normal.
+    ensure_hid_mode(dev, print_log);
+    if (auto failed = read_failed_attempts(dev); failed && *failed > 0)
+        std::fprintf(stderr, "Warning: %s.\n", failed_attempts_warning(*failed).c_str());
+
+    Password pw;
+    bool ok = password_stdin ? read_password_stdin(pw)
+                             : read_password_tty("Password for " + describe(dev) + ": ", pw);
+    if (!ok || pw.value.empty()) {
+        std::fprintf(stderr, "No password given.\n");
+        return 1;
+    }
+    if (pw.value.size() > kMaxPasswordBytes) {
+        std::fprintf(stderr, "Password too long (max 16 bytes); nothing was sent.\n");
+        return 1;
+    }
+
+    try {
+        unlock_device(dev, pw.value, print_log, trace);
+    } catch (const NotUnlockedError& e) {
+        std::fprintf(stderr, "%s.\n", e.what());
+        return 3;
+    }
+
+    for (const auto& d : dev.disks)
+        if (d.size_bytes > 0)
+            std::printf("Unlocked: %s (%s)\n", d.node.c_str(), human_size(d.size_bytes).c_str());
+    return 0;
+}
+
 void usage()
 {
-    std::puts("Usage: ironkey-unlock list\n"
-              "       ironkey-unlock hid-mode  [--device PORT]\n"
-              "       ironkey-unlock handshake [--device PORT]");
+    std::puts(
+        "Usage: ironkey-unlock [COMMAND] [--device PORT]\n"
+        "\n"
+        "Commands:\n"
+        "  list                       Show connected Kingston devices (default)\n"
+        "  unlock [--password-stdin] [--trace]\n"
+        "                             Unlock a drive; prompts for the password.\n"
+        "                             --trace logs every HID exchange (secrets redacted)\n"
+        "  hid-mode                   Switch a locked drive to HID mode\n"
+        "  handshake                  Diagnostic: key exchange only, sends no password\n"
+        "  dump [--no-session]        Diagnostic: dump the drive's config/status queries,\n"
+        "                             before and after a key exchange. Sends no password.\n"
+        "                             --no-session skips the key exchange\n"
+        "\n"
+        "--device PORT selects a drive by USB port (see 'list') when several are connected.");
 }
 
 }  // namespace
@@ -144,10 +264,19 @@ int main(int argc, char** argv)
 {
     std::string_view cmd = argc > 1 ? argv[1] : "list";
     std::string port;
+    bool password_stdin = false;
+    bool trace = false;
+    bool with_session = true;
     for (int i = 2; i < argc; ++i) {
         std::string_view arg = argv[i];
         if (arg == "--device" && i + 1 < argc) {
             port = argv[++i];
+        } else if (arg == "--password-stdin" && cmd == "unlock") {
+            password_stdin = true;
+        } else if (arg == "--trace" && cmd == "unlock") {
+            trace = true;
+        } else if (arg == "--no-session" && cmd == "dump") {
+            with_session = false;
         } else {
             usage();
             return 2;
@@ -157,10 +286,18 @@ int main(int argc, char** argv)
     try {
         if (cmd == "list")
             return cmd_list();
+        if (cmd == "unlock")
+            return cmd_unlock(port, password_stdin, trace);
+        if (cmd == "dump")
+            return cmd_dump(port, with_session);
         if (cmd == "hid-mode")
             return cmd_hid_mode(port);
         if (cmd == "handshake")
             return cmd_handshake(port);
+        if (cmd == "-h" || cmd == "--help" || cmd == "help") {
+            usage();
+            return 0;
+        }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "Error: %s\n", e.what());
         return 1;

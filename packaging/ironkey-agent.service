@@ -1,0 +1,13 @@
+[Unit]
+Description=IronKey unlock agent
+Documentation=https://github.com/triangulatedas/ironkey
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/ironkey-agent
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

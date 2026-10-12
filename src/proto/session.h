@@ -18,7 +18,29 @@ public:
     using IronKeyError::IronKeyError;
 };
 
+// The device rejected the password (FF A4 status report, byte 6).
+class WrongPasswordError : public UnlockError {
+public:
+    using UnlockError::UnlockError;
+};
+
 constexpr size_t kMaxPasswordBytes = 16;
+
+// The out-of-box limit of consecutive failed logins per account (MaxNoA)
+// according to Kingston's manual. Reaching it on the admin account
+// crypto-erases the drive.
+constexpr int kDefaultMaxFailedAttempts = 10;
+
+// Decoded GetAreaParams (FF A0). Works without a session or password.
+// See PROTOCOL.md, "Status queries".
+struct AreaParams {
+    uint32_t data_sectors = 0;   // [0x00] size of the encrypted data area
+    bool unlocked = false;       // [0x08]
+    uint8_t failed_attempts = 0; // [0x0C] consecutive failed logins, reset on success
+    Bytes raw;
+};
+
+AreaParams read_area_params(Channel& ch);
 
 // Fixed PVC key from the vendor application (see PROTOCOL.md, Step 4).
 extern const std::array<uint8_t, 64> kPvc0Key;
@@ -35,6 +57,7 @@ Bytes encrypt_pvc_key(ByteView pvc0_key, const Key128& shared, ByteView random32
 Key128 rsa_handshake(Channel& ch, Random& rng, const RsaKey& host_key);
 
 // PVC open, password and commit (FF 8B, 8F, A4, 89).
+// Throws WrongPasswordError if the device rejects the password.
 void send_unlock(Channel& ch, const Key128& shared, std::string_view password, Random& rng);
 
 // Complete unlock of a device already in HID mode.

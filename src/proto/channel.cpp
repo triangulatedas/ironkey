@@ -59,6 +59,7 @@ Bytes Channel::command(uint8_t sub, uint8_t cdb2, Direction dir, ByteView data,
                        uint32_t data_len, const Cdb& cdb)
 {
     uint32_t len = data_len ? data_len : static_cast<uint32_t>(data.size());
+    last_status.clear();
     dev_.write_output(build_command_report(sub, cdb2, dir, len, cdb));
 
     if (!dev_.read_input(response_timeout))
@@ -74,8 +75,8 @@ Bytes Channel::command(uint8_t sub, uint8_t cdb2, Direction dir, ByteView data,
         if (read_delay.count() > 0)
             std::this_thread::sleep_for(read_delay);
         Bytes result = dev_.get_feature();
-        // The status that follows a read is not meaningful; consume it.
-        dev_.read_input(response_timeout);
+        // The status that follows a read carries no error information.
+        last_status = dev_.read_input(response_timeout).value_or(Bytes{});
         if (result.size() > len)
             result.resize(len);
         return result;
@@ -91,12 +92,13 @@ void Channel::drain()
         ;
 }
 
-void Channel::check_status(uint8_t sub, const std::optional<Bytes>& resp)
+void Channel::check_status(uint8_t sub, std::optional<Bytes> resp)
 {
     // A missing status report is tolerated, as in the original tool.
     if (!resp || resp->size() < 6)
         return;
-    uint16_t status = (*resp)[4] | ((*resp)[5] << 8);
+    last_status = std::move(*resp);
+    uint16_t status = last_status[4] | (last_status[5] << 8);
     if (status != 0)
         throw DeviceStatusError(sub, status);
 }

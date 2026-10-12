@@ -40,8 +40,13 @@ public:
     std::chrono::milliseconds read_delay{300};
     std::chrono::milliseconds response_timeout{2000};
 
+    // The status report (interrupt input) that ended the last command, or
+    // empty if none arrived. Layout: [2] command echo, [4..5] status,
+    // [6] command-specific result (for FF A4: 1 = wrong password).
+    Bytes last_status;
+
 private:
-    void check_status(uint8_t sub, const std::optional<Bytes>& resp);
+    void check_status(uint8_t sub, std::optional<Bytes> resp);
 
     HidDevice& dev_;
 };

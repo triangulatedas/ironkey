@@ -79,13 +79,26 @@ Offset  Size  Field
 
 ### Interrupt Response Format (64 bytes)
 
+Each command produces two interrupt input reports: an acknowledgement after
+the command header, and a status report once the command (and any feature
+transfer) has completed. Observed on a Locker+50G2:
+
 ```
+Acknowledgement:  00 01 00 00 00 00 00 00 ...
+Status report:    00 00 <cmd> 00 <status lo> <status hi> <result> 00 ...
+
 Offset  Size  Field
 ------  ----  -----
-0x00    2     Acknowledge: 0x0001 (command received)
-0x02    2     Command echo (e.g., 0x0081 for subcommand 0x81)
-0x04    2     Status: 0x0000 = success, nonzero = error
+0x02    1     Command echo (e.g., 0xA4)
+0x04    2     Status (little-endian): 0x0000 = command processed
+0x06    1     Command-specific result. For FF A4: 0x00 = password
+              accepted, 0x01 = wrong password
 ```
+
+**Note:** a wrong password does *not* produce a non-zero status. Every
+command, including FF A4 and FF 89, returns status 0; only byte 0x06 of the
+FF A4 status report tells the outcome. (FF 89's acknowledgement is not
+always sent; the status report can arrive first.)
 
 ## Step 3: RSA-512 Key Exchange (FF 81-88)
 
@@ -229,7 +242,9 @@ Feature data:   AES-128-ECB(shared_secret, password_padded) — 16 bytes
 ```
 
 The user password is zero-padded to 16 bytes (max 16 bytes) and
-AES-128-ECB encrypted with the shared secret.
+AES-128-ECB encrypted with the shared secret. Byte 0x06 of the status report
+for this command is 1 if the password was wrong (see "Interrupt Response
+Format").
 
 CDB parameters:
 - CDB[3] = secureType (0x00)
@@ -275,6 +290,55 @@ FF 89  NONE          Commit (finalize authentication)
                       Device exposes data partition
 ```
 
+## Status queries (FF 21, FF A0)
+
+Both are plain reads (direction read, 0x200 bytes) and work **without a
+session or password**, before or after the RSA handshake. Neither uses up a
+login attempt: a handshake that is never followed by FF A4 does not change
+the failed-attempt counter, even if power is then removed. Observed on a
+Locker+50G2 (64 GB), set up with both admin and user passwords.
+
+### FF 21 — GetConfig
+
+```
+02 02 00 [02] 00 | 00 40 2F 07 | 03 01 [0A] 00 00 | B0 04
+```
+
+| Offset | Value | Meaning |
+|---|---|---|
+| 0x03 | `02` locked, `00` unlocked | lock state (probable) |
+| 0x05–0x08 | `0x072F4000` LE | data area size in 512-byte sectors (61.7 GB) |
+| 0x0B | `0A` before any session since power-on, `08` once a session has been started | session flag (bit 1); not a counter, resets on replug |
+| 0x0E–0x0F | `0x04B0` = 1200 | unknown; possibly an auto-lock timeout in seconds |
+
+### FF A0 — GetAreaParams
+
+| Offset | Value | Meaning |
+|---|---|---|
+| 0x00–0x03, 0x04–0x07 | `0x072F4000` LE | data area size in sectors (twice) |
+| 0x08 | `00` locked, `01` unlocked | data area open |
+| **0x0C** | **0, 1, 2, …** | **consecutive failed logins**; increments on each wrong password, resets to 0 on a successful login |
+| 0x1E–0x1F | `01 07` | unknown, constant so far |
+| 0x20 | `00` locked, `06` unlocked | mirrors the autoLogout parameter sent with FF A4 (CDB[6] = 0x06) |
+| 0x21–0x23 | changes between sessions (`00 00 03`, `00 00 02`, `00 00 18`, `28 00 2E`, …) | unknown session/state value; **not** a counter |
+
+Kingston's manual gives a default limit (MaxNoA) of **10 consecutive failed
+logins per account**. Reaching it on the User account locks User login (the
+Admin can reset it); reaching it on the **Admin** account crypto-erases the
+drive. Where the limit itself is stored has not been identified.
+
+### Accounts (userIDIndex)
+
+FF A4's CDB[4] selects the account. With admin and user passwords both set:
+
+- **Index 0 is the Admin account.** The admin password unlocks with index 0.
+  The user password with index 0 is rejected and counted as a failed login
+  in 0x0C.
+- Index 1 is presumably the User account; not yet tested.
+
+The original single-password set-up (as used by the Python tool) also logs
+in with index 0.
+
 ## Subcommand Reference
 
 | Subcmd | Name | Dir | Size | Description |
@@ -292,6 +356,6 @@ FF 89  NONE          Commit (finalize authentication)
 | 0x89 | Commit | NONE | — | Finalize session |
 | 0x8B | StartSecureAccess | NONE | — | Open secure domain |
 | 0x8F | PVCFuncOpen | WRITE | 64 | PVC key exchange |
-| 0xA0 | GetAreaParams | READ | 0x200 | Area parameters / status |
+| 0xA0 | GetAreaParams | READ | 0x200 | Area parameters / status, incl. failed-login count (see above) |
 | 0xA2 | ConfigPrivateArea | WRITE | — | Configure data area |
 | 0xA4 | NTU_Open | WRITE | 16 | Encrypted password auth |

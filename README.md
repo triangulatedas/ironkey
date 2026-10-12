@@ -48,9 +48,9 @@ and used.
 
 | Original | This version |
 |---|---|
-| Run by hand with `sudo python3 ironkey_unlock.py` | A session agent notices the drive being plugged in and asks for the password *(planned)* |
+| Run by hand with `sudo python3 ironkey_unlock.py` | A session agent notices the drive being plugged in and asks for the password |
 | Assumes exactly one IronKey is connected | Handles several IronKeys at once, each tracked separately |
-| Needs Python 3 and `pycryptodome` | Compiled C++20 binary, depends only on OpenSSL and libudev |
+| Needs Python 3 and `pycryptodome` | Compiled C++20 binaries, depending only on OpenSSL, libudev and libsystemd |
 | Needs root | Runs as the logged-in user, through a udev `uaccess` rule |
 | Copy the script and install dependencies | Debian package *(planned)* |
 
@@ -96,8 +96,15 @@ port, and only those nodes are touched. If several drives are connected,
   anything is sent to the device. Previously two session commands had already
   been sent when the error was raised.
 - **Password on the command line.** The `-p PASSWORD` option is removed, since
-  it exposes the password in `ps` and shell history. *(The unlock command is
-  planned to read from a prompt or from stdin.)*
+  it exposes the password in `ps` and shell history. `unlock` prompts on the
+  terminal with echo off, or reads from `--password-stdin`.
+- **Password asked first.** The CLI and the agent ask for the password before
+  switching the drive to HID mode, so cancelling leaves the drive untouched.
+- **Wrong passwords were never detected.** The original checked the status
+  field for errors, but the drive returns status OK even for a wrong password.
+  The real result is in a separate byte of the status report. This version
+  reads it and reports a wrong password immediately, along with the drive's
+  failed-login count, which the original never read.
 - **Secrets in memory.** The host RSA private key, the session key, the
   password and intermediate values are wiped with `OPENSSL_cleanse` after use.
 
@@ -121,9 +128,10 @@ second test runs the full exchange against a simulated device that performs
 the device side of the protocol with real RSA keys, including a
 wrong-password case.
 
-On real hardware (Locker+50G2), the mode switch and the RSA handshake have
-been verified running as a normal user. The password and commit steps have
-not yet been run on hardware.
+On real hardware (Locker+50G2), the following have been verified running as
+a normal user: the mode switch, the RSA handshake, a full unlock with the
+admin password, wrong-password detection with the failed-login counter, and
+the agent's hotplug handling in `--dry-run` mode.
 
 ## Status
 
@@ -131,8 +139,8 @@ not yet been run on hardware.
 |---|---|
 | 1. Protocol port, tested against the Python implementation | done |
 | 2. Hardware check of the udev `uaccess` rule (no root) | done: mode switch and handshake work as a normal user |
-| 3. Multi-device CLI | in progress: `list`, `hid-mode`, `handshake`; `unlock` next |
-| 4. Session agent (udev monitor, password prompt, notifications) | todo |
+| 3. Multi-device CLI | done: `list`, `unlock`, `hid-mode`, `handshake` |
+| 4. Session agent (udev monitor, password prompt, notifications) | done; hotplug verified in `--dry-run`; real unlock via agent untested |
 | 5. Debian package | todo |
 | 6. CI builds for amd64 / arm64 | todo |
 
@@ -141,10 +149,11 @@ drive, and passphrase mode. Set the drive up with the vendor software first.
 
 ## Building
 
-Requires CMake ≥ 3.20, a C++20 compiler, OpenSSL 3 and libudev:
+Requires CMake ≥ 3.20, a C++20 compiler, OpenSSL 3, libudev and libsystemd
+(sd-bus, for notifications):
 
 ```bash
-sudo apt install build-essential cmake libssl-dev libudev-dev
+sudo apt install build-essential cmake pkg-config libssl-dev libudev-dev libsystemd-dev
 cmake -S . -B build
 cmake --build build -j
 ctest --test-dir build --output-on-failure
@@ -152,18 +161,43 @@ ctest --test-dir build --output-on-failure
 
 ## Usage
 
-Install the udev rule once, then replug the drive:
+Until the Debian package exists, install from a build:
 
 ```bash
-sudo cp packaging/70-ironkey.rules /etc/udev/rules.d/
-sudo udevadm control --reload
+sudo cmake --install build --prefix /usr     # binaries, udev rule, systemd user unit
+sudo udevadm control --reload                # then replug the drive
+systemctl --user enable --now ironkey-agent  # start the agent with your desktop session
 ```
+
+### Agent
+
+`ironkey-agent` runs in your desktop session. When an IronKey is plugged in, it
+shows a password dialog (zenity, or kdialog on KDE). After unlocking, the drive
+is mounted by the desktop as usual and a notification shows which disk it is.
+
+- Each drive gets its own dialog, naming the model, serial and USB port.
+- Cancel leaves the drive locked. The agent doesn't ask again until the drive
+  is replugged.
+- Unplugging the drive closes its dialog.
+- After a failed attempt the dialog comes back with the failure count and a
+  warning. Passwords are never retried automatically.
+- `ironkey-agent --dry-run` detects drives and shows the dialog, but never
+  sends anything to a drive. Use it for testing.
+
+Logs: `journalctl --user -u ironkey-agent`.
+
+### Command line
 
 ```bash
 ironkey-unlock list                        # connected Kingston devices, state, nodes and access
+ironkey-unlock unlock [--device PORT]      # prompt for the password and unlock
+ironkey-unlock unlock --password-stdin     # read the password from stdin (scripts)
 ironkey-unlock hid-mode  [--device PORT]   # switch a locked drive to HID mode
 ironkey-unlock handshake [--device PORT]   # diagnostic: key exchange only, no password sent
 ```
+
+`--device PORT` is needed only when more than one IronKey is connected.
+`unlock` exits with code 3 if the drive did not unlock.
 
 Example:
 
@@ -176,11 +210,17 @@ port 2-1  0951:159d  Locker+50G2  S/N 80C5F260C660BA70F1F32591  [locked]
 ```
 
 > IronKey drives erase themselves after too many wrong passwords. Neither the
-> CLI nor the planned agent ever retries a password automatically.
+> CLI nor the agent ever retries a password automatically.
 
 ## Hardware notes
 
-Tested with a Locker+50G2: locked PID `0951:159d`, HID mode PID `0951:00d3`.
+Tested with a Locker+50G2 (64 GB): locked PID `0951:159d`, HID mode PID
+`0951:00d3`. Unlocking with the admin password has been verified on hardware.
+The drive reports wrong passwords and keeps a failed-login counter that can
+be read without logging in; both tools show it (see
+[PROTOCOL.md](PROTOCOL.md#status-queries-ff-21-ff-a0)). With separate admin and
+user passwords set, the tools currently log in to the **admin** account
+(index 0); user login (index 1) is not supported yet.
 The drive keeps its USB port path and serial across the switch. Other
 capacities (16G2, 32G2, …) use other PIDs. Devices are recognised by vendor ID
 and product name, so they are expected to work, but have not been tested.
@@ -191,7 +231,8 @@ and product name, so they are expected to work, but have not been tested.
 src/proto/   Protocol: command framing, RSA handshake, unlock. Depends only on OpenSSL.
 src/linux/   Linux device access: hidraw, usbfs mode switch, sysfs topology, volumes.
 src/cli/     ironkey-unlock command.
-packaging/   udev rule.
+src/agent/   ironkey-agent: udev monitor, per-port workers, password dialog, notifications.
+packaging/   udev rule and systemd user unit.
 tests/       Unit tests; vectors.inc is generated from the original Python code.
 tools/       gen_vectors.py
 ```

@@ -2,6 +2,11 @@
 // End-to-end test against a simulated IronKey that runs the device side of
 // the protocol with real keys, so the RSA and AES maths are checked from both
 // ends rather than against recorded bytes only.
+//
+// Like the real device (observed on a Locker+50G2), the simulation answers
+// every command with status OK, even for a wrong password. A wrong password is
+// flagged in byte 6 of the FF A4 status report, and counted in GetAreaParams
+// byte 0x0C until the next successful login.
 #include <cstring>
 #include <deque>
 
@@ -18,6 +23,9 @@ public:
 
     bool unlocked = false;
     bool host_proved_key = false;
+    bool pvc_open = false;
+    bool password_ok = false;
+    uint8_t failed_attempts = 0;
 
     void write_output(ByteView report) override
     {
@@ -30,10 +38,11 @@ public:
         std::memcpy(cdb_.data(), &report[0x10], cdb_.size());
         inputs_.push_back(status_report(0));  // acknowledgement
 
+        result_ = 0;
         if (reading_)
             response_ = handle_read();
         else if (len_ == 0)
-            inputs_.push_back(status_report(handle_write({})));
+            inputs_.push_back(status_report(handle_write({}), result_));
     }
 
     std::optional<Bytes> read_input(std::chrono::milliseconds) override
@@ -49,7 +58,8 @@ public:
     {
         CHECK(!reading_);
         CHECK_EQ(data.size(), static_cast<size_t>(len_));
-        inputs_.push_back(status_report(handle_write(data)));
+        uint16_t status = handle_write(data);
+        inputs_.push_back(status_report(status, result_));
     }
 
     Bytes get_feature() override
@@ -62,13 +72,14 @@ public:
     }
 
 private:
-    Bytes status_report(uint16_t status)
+    Bytes status_report(uint16_t status, uint8_t result = 0)
     {
         Bytes r(64, 0);
         r[0] = 1;
         r[2] = sub_;
         r[4] = status & 0xFF;
         r[5] = status >> 8;
+        r[6] = result;
         return r;
     }
 
@@ -86,6 +97,13 @@ private:
             nonce_ = rng_.bytes(63);
             nonce_.push_back(0);
             return nonce_;
+        case 0xA0: {
+            Bytes r(0x200, 0);
+            r[0] = 0x00, r[1] = 0x40, r[2] = 0x2F, r[3] = 0x07;
+            r[0x08] = unlocked ? 1 : 0;
+            r[0x0C] = failed_attempts;
+            return r;
+        }
         case 0x88: {
             Bytes r_dev = rng_.bytes(63);
             r_dev.push_back(0);
@@ -109,7 +127,7 @@ private:
             return 0;
         case 0x86:
             host_proved_key = mod_exp_le(data, host_e_, host_n_) == nonce_;
-            return host_proved_key ? 0 : 0x0010;
+            return 0;
         case 0x87:
             r2_ = mod_exp_le(data, key_.d, key_.n);
             return 0;
@@ -125,20 +143,26 @@ private:
             auto h2 = sha256(local);
             auto b0 = aes128_ecb_encrypt(shared_, ByteView(h2.data(), 16));
             auto b1 = aes128_ecb_encrypt(shared_, ByteView(h2.data() + 16, 16));
-            pvc_open_ = secure_access_ && std::equal(b0.begin(), b0.end(), data.begin()) &&
-                        std::equal(b1.begin(), b1.end(), data.begin() + 16);
-            return pvc_open_ ? 0 : 0x0020;
+            pvc_open = secure_access_ && std::equal(b0.begin(), b0.end(), data.begin()) &&
+                       std::equal(b1.begin(), b1.end(), data.begin() + 16);
+            return 0;
         }
         case 0xA4: {
             std::array<uint8_t, 16> expected{};
             std::memcpy(expected.data(), password_.data(), password_.size());
             auto enc = aes128_ecb_encrypt(shared_, expected);
-            password_ok_ = std::equal(enc.begin(), enc.end(), data.begin());
-            return password_ok_ ? 0 : 0x0030;
+            password_ok = std::equal(enc.begin(), enc.end(), data.begin());
+            if (!password_ok) {
+                ++failed_attempts;
+                result_ = 1;
+            }
+            return 0;
         }
         case 0x89:
-            unlocked = host_proved_key && pvc_open_ && password_ok_;
-            return unlocked ? 0 : 0x0040;
+            unlocked = host_proved_key && pvc_open && password_ok;
+            if (unlocked)
+                failed_attempts = 0;
+            return 0;
         }
         throw check::Failure{"unexpected write command " + std::to_string(sub_)};
     }
@@ -148,9 +172,10 @@ private:
     RsaKey key_ = RsaKey::generate512();
     Bytes host_n_, host_e_, r1_, r2_, nonce_, response_;
     Key128 shared_{};
-    bool secure_access_ = false, pvc_open_ = false, password_ok_ = false;
+    bool secure_access_ = false;
 
     uint8_t sub_ = 0;
+    uint8_t result_ = 0;
     uint32_t len_ = 0;
     bool reading_ = false;
     Cdb cdb_{};
@@ -185,18 +210,70 @@ TEST(unlocks_simulated_device_with_correct_password)
         SimulatedIronKey dev("hunter2-hunter2!");
         run_unlock(dev, "hunter2-hunter2!");
         CHECK(dev.host_proved_key);
+        CHECK(dev.pvc_open);
+        CHECK(dev.password_ok);
         CHECK(dev.unlocked);
     }
 }
 
-TEST(wrong_password_reports_device_status)
+TEST(wrong_password_is_reported_and_counted)
 {
     SimulatedIronKey dev("right");
-    try {
-        run_unlock(dev, "wrong");
-        throw check::Failure{"expected DeviceStatusError"};
-    } catch (const DeviceStatusError& e) {
-        CHECK_EQ(e.command, 0xA4);
-    }
+    CHECK_THROWS_AS(run_unlock(dev, "wrong"), WrongPasswordError);
+    CHECK(dev.host_proved_key);
+    CHECK(dev.pvc_open);
     CHECK(!dev.unlocked);
+    CHECK_THROWS_AS(run_unlock(dev, "wrong again"), WrongPasswordError);
+
+    Channel ch(dev);
+    ch.read_delay = std::chrono::milliseconds(0);
+    AreaParams p = read_area_params(ch);
+    CHECK_EQ(int(p.failed_attempts), 2);
+    CHECK(!p.unlocked);
+
+    run_unlock(dev, "right");
+    CHECK(dev.unlocked);
+    p = read_area_params(ch);
+    CHECK_EQ(int(p.failed_attempts), 0);
+    CHECK(p.unlocked);
+}
+
+// Replies captured from a real Locker+50G2 (see PROTOCOL.md, "Status queries").
+TEST(decodes_real_get_area_params_replies)
+{
+    struct Case {
+        const char* hex;
+        bool unlocked;
+        int failed;
+    };
+    const Case cases[] = {
+        // locked, after two wrong passwords
+        {"00402f0700402f0700000000020000000000000000000000000000000000010700000043", false, 2},
+        // unlocked with the admin password
+        {"00402f0700402f07010000000000000000000000000000000000000000000107064d004f", true, 0},
+    };
+    for (const auto& c : cases) {
+        class Fixed : public HidDevice {
+        public:
+            explicit Fixed(Bytes r) : reply(std::move(r)) { reply.resize(kFeatureReportSize); }
+            Bytes reply;
+            int inputs = 0;
+            void write_output(ByteView) override { inputs = 2; }
+            std::optional<Bytes> read_input(std::chrono::milliseconds) override
+            {
+                if (inputs == 0)
+                    return std::nullopt;
+                --inputs;
+                return Bytes(64, 0);
+            }
+            void set_feature(ByteView) override {}
+            Bytes get_feature() override { return reply; }
+        } dev(from_hex(c.hex));
+        Channel ch(dev);
+        ch.read_delay = std::chrono::milliseconds(0);
+        AreaParams p = read_area_params(ch);
+        CHECK_EQ(p.data_sectors, 0x072F4000u);  // 61.7 GB
+        CHECK_EQ(p.unlocked, c.unlocked);
+        CHECK_EQ(int(p.failed_attempts), c.failed);
+    }
 }

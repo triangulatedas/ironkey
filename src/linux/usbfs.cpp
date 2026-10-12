@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <linux/usbdevice_fs.h>
 #include <sys/ioctl.h>
+#include <unistd.h>
 
 #include <cerrno>
 #include <system_error>
@@ -90,7 +91,9 @@ bool wait_for_hid_mode(UsbDevice& dev, std::chrono::seconds timeout)
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
-        if (refresh(dev) && dev.in_hid_mode())
+        // The node can appear before udev has applied the uaccess ACL.
+        if (refresh(dev) && dev.in_hid_mode() &&
+            ::access(dev.hidraw.front().c_str(), R_OK | W_OK) == 0)
             return true;
     }
     return false;
