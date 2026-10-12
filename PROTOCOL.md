@@ -368,3 +368,55 @@ in with index 0.
 | 0xA0 | GetAreaParams | READ | 0x200 | Area parameters / status, incl. failed-login count (see above) |
 | 0xA2 | ConfigPrivateArea | WRITE | — | Configure data area |
 | 0xA4 | NTU_Open | WRITE | 16 | Encrypted password auth |
+
+## Management command set (reverse-engineered; not yet implemented)
+
+Beyond unlock, the vendor application exposes a full management API. These
+notes come from static analysis of the Windows and macOS vendor binaries
+(for interoperability). They are **not implemented yet** and the exact
+payloads still need confirming on hardware before use.
+
+### Transport
+
+Every vendor command is a 10-byte SCSI CDB `FF <subfunc> <params...>`, sent
+via SCSI pass-through (Windows `DeviceIoControl`, Linux `SG_IO`). Many are
+also reachable over the HID transport the unlock path uses. Note: the Linux
+kernel blocks vendor opcode `0xFF` for unprivileged `SG_IO`, so SCSI-path
+features need `CAP_SYS_RAWIO` (a `setcap` helper), unlike the HID unlock path
+which needs no privilege.
+
+### Command subfunctions (second CDB byte)
+
+| Range | Purpose |
+|---|---|
+| `04` (04 00/02/03…09) | Device info (descriptors, serial, MaxNoA). `FF 04 01` returns a 512-byte info block. |
+| `21` | GetConfig (512-byte read) |
+| `80`–`88` | RSA handshake (same as the HID `81`–`88`) |
+| `89` | Commit |
+| `8B` | Start secure access |
+| `8F` | PVCFuncOpen (param 1/2/3) |
+| `A0` | GetAreaParams (512-byte read; byte `0x0C` = admin failed-login count) |
+| `A2` | ConfigPrivateArea (write) — used when (re)partitioning the data area |
+| `A4` | NTU_Open — password verify (CDB[2]=userIDIndex: 0 admin, 1 user) |
+| `A5`–`AA`, `E2` | further area/account operations |
+| `60`–`6E` | account/profile block |
+
+### SDK operations (from macOS symbols) and their primitives
+
+| Operation | SDK method | Device primitive |
+|---|---|---|
+| Initialize / set passwords | `DriveSDK::setPassword(admin, user, mode)` | `UDV_SetExternalPVC0`, `encryptPVCKey` |
+| Change password | `DriveSDK::changePassword(old, new, flag)` | — |
+| Reset user password (as admin) | `DriveSDK::resetUserPassword(new)` | — |
+| Recovery password | `DriveSDK::createRecoveryPassword`, `useRecoveryPasswordToCreateNewUserPassword` | — |
+| **Reset / crypto-erase** | `DriveSDK::formatPartition()` | **`UDV_FormatPartition(lun, buf, len, 0)`** |
+| Retry counter | `DriveSDK::getPasswordRemainRetryCount(account)` | `FF 04 01` device-info read (`remaining = max − failed`) |
+| Read-only / hidden area | `DriveSDK::setupProtectedHiddenArea`, `read/writeProtectHiddenArea` | `UDV_Read/WriteProtectHidden_Type1` |
+
+### Accounts
+
+At most two password accounts — admin (index 0) and user (index 1) — plus an
+optional one-time recovery password. `MaxNoA` (max consecutive failed logins)
+defaults to 10 per account; the device reports it in the `FF 04 01` block.
+Reaching it crypto-erases on the admin account, or locks out on the user
+account (admin can then reset).
