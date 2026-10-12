@@ -6,6 +6,7 @@
 
 #include <cctype>
 #include <cstdio>
+#include <iostream>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -324,6 +325,54 @@ int cmd_reset_probe(const std::string& port)
     return status == 0 ? 0 : 3;
 }
 
+// Diagnostic: replay captured FF 62 "write protected page" commands (the
+// vendor Format step) read as hex lines on stdin: "<cdb_hex> <payload_hex>".
+// Activates the data partition after a reset. DESTRUCTIVE to the data area.
+int cmd_format_replay(const std::string& port)
+{
+    auto unhex = [](const std::string& s) {
+        Bytes b;
+        for (size_t i = 0; i + 1 < s.size(); i += 2)
+            b.push_back(static_cast<uint8_t>(std::stoul(s.substr(i, 2), nullptr, 16)));
+        return b;
+    };
+    std::vector<std::pair<uint8_t, Bytes>> pages;
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line.empty() || line[0] == '#')
+            continue;
+        auto sp = line.find(' ');
+        if (sp == std::string::npos)
+            continue;
+        Bytes cdb = unhex(line.substr(0, sp));
+        Bytes payload = unhex(line.substr(sp + 1));
+        if (cdb.size() < 4 || payload.size() != 512)
+            continue;
+        pages.emplace_back(cdb[3], std::move(payload));
+    }
+    if (pages.empty()) {
+        std::fprintf(stderr, "No FF 62 page writes on stdin.\n");
+        return 1;
+    }
+    std::printf("Replaying %zu protected-page writes.\n", pages.size());
+
+    UsbDevice dev;
+    if (!select_device(port, dev))
+        return 1;
+    check_access(dev);
+    ensure_hid_mode(dev, print_log);
+    HidrawDevice hid(dev.hidraw.front());
+    write_protected_pages(hid, pages);
+    std::puts("Protected pages written. Re-reading area size.");
+
+    refresh(dev);
+    ensure_hid_mode(dev, print_log);
+    DriveStatus st = read_drive_status(dev);
+    std::printf("admin_failed=%s\n",
+                st.admin_failed_attempts ? std::to_string(*st.admin_failed_attempts).c_str() : "?");
+    return 0;
+}
+
 int cmd_lock(const std::string& port)
 {
     // Only drives that are unlocked are candidates, so "the only IronKey"
@@ -465,6 +514,8 @@ int main(int argc, char** argv)
             return cmd_reset_probe(port);
         if (cmd == "reset-selftest")
             return cmd_reset_selftest(port);
+        if (cmd == "format-replay")
+            return cmd_format_replay(port);
         if (cmd == "lock")
             return cmd_lock(port);
         if (cmd == "hid-mode")

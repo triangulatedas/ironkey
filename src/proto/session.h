@@ -2,6 +2,8 @@
 #pragma once
 
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "proto/channel.h"
 #include "proto/crypto.h"
@@ -102,6 +104,14 @@ void change_password(HidDevice& dev, std::string_view old_password, std::string_
 // Set a password with no prior password (FF A5, then 8B/8F/A4/89), as used
 // after a re-key during reset/initialize. The drive must be in HID mode.
 void set_password(HidDevice& dev, std::string_view new_password, Account account = Account::Admin);
+
+// Replays FF 62 "write protected page" commands (the vendor Format step that
+// activates the data partition after a reset). Each entry is (page_index,
+// 512-byte payload); the payloads are session-independent, so captured bytes
+// replay verbatim. Pages are written two per secure session with a FF 26 mode
+// flag, mirroring the capture. The drive must be in HID mode.
+void write_protected_pages(HidDevice& dev,
+                           const std::vector<std::pair<uint8_t, Bytes>>& pages);
 
 // Full factory reset / initialize (the vendor "Reset Device" flow): mode flag,
 // then a single committed FF A2 Configure that both re-keys the area

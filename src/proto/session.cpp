@@ -372,4 +372,32 @@ void set_password(HidDevice& dev, std::string_view new_password, Account account
     secure_wipe(shared.data(), shared.size());
 }
 
+void write_protected_pages(HidDevice& dev, const std::vector<std::pair<uint8_t, Bytes>>& pages)
+{
+    Channel ch(dev);
+    SystemRandom rng;
+
+    auto open_session = [&]() -> Key128 {
+        RsaKey host = RsaKey::generate512();
+        Key128 shared = rsa_handshake(ch, rng, host);
+        Bytes pvc = encrypt_pvc_key(kPvc0Key, shared, rng.bytes(32));
+        ch.command(0x8B, 0x00, Direction::None, {}, 0, {0x00, 0x03});
+        ch.command(0x8F, 0x00, Direction::Write, pvc, 0, {0x02});
+        return shared;
+    };
+
+    // Mirror the capture: two pages per secure session, each session led by a
+    // FF 26 mode flag. FF 62 CDB = page index, then the "rick" page key.
+    for (size_t i = 0; i < pages.size(); i += 2) {
+        Key128 k = open_session();
+        ch.command(0x26, 0x00, Direction::Write, Bytes{0x00, 0x02, 0x00}, 3, {0x00, 0x53});
+        for (size_t j = i; j < i + 2 && j < pages.size(); ++j) {
+            uint8_t idx = pages[j].first;
+            ch.command(0x62, 0x00, Direction::Write, pages[j].second, 512,
+                       {idx, 0x00, 0x72, 0x69, 0x63, 0x6b, 0x00, 0x00});
+        }
+        secure_wipe(k.data(), k.size());
+    }
+}
+
 }  // namespace ironkey
