@@ -420,3 +420,29 @@ optional one-time recovery password. `MaxNoA` (max consecutive failed logins)
 defaults to 10 per account; the device reports it in the `FF 04 01` block.
 Reaching it crypto-erases on the admin account, or locks out on the user
 account (admin can then reset).
+
+### Reset and Initialize (architecture)
+
+Reverse engineering the macOS `DriveSDK` shows **Reset Device and Initialize
+are the same core operation**. The forgotten-password "Reset Device" prompts
+for a *new* password and re-keys the drive; it does not need the old password.
+Both reduce to:
+
+1. **Set password + re-key** — `DriveSDK::setPassword(admin, user, mode)`:
+   - `CheckActiveFunc` → `GetPVC0Status` → `DevGetICType`
+   - `UDV_SetPassword` (dedicated set command — *not* the `FF A4` verify) which
+     installs a new **external PVC0 key** via `UDV_SetExternalPVC0`. Replacing
+     the key cryptographically abandons the old data (this is the crypto-erase).
+   - `UDV_SetPWS_ProtectHidden`, `UDV_Open/CloseContinuousAccess`,
+     `UDV_GetStatus`, wrapped by `UDV_Login`/`UDV_Logout`.
+2. **Rebuild filesystem** — `DriveSDK::formatPartition()` → `UDV_FormatPartition`
+   → `Def_buildTable_Hid` + `buildFAT32/16/12`, which writes a new partition
+   table and FAT over the HID transport (subcommands `0xF0`/`0xF1`/`0xF2`;
+   no elevated privilege needed).
+
+Still to pin down before implementing: the exact `UDV_SetPassword` payload
+(encrypted new password + PVC key material) and the `0xF0/F1/F2` report
+layouts. These are built through Objective-C `SCSITask`/IOKit dispatch on
+macOS; the Windows binary builds the CDBs directly and is the better source
+for the exact bytes. Testing is safe to iterate on an already-blank drive
+(initialize), but each attempt re-keys, so treat it as destructive.
