@@ -1,0 +1,139 @@
+// SPDX-License-Identifier: GPL-2.0-only
+#include "proto/session.h"
+
+#include <algorithm>
+
+namespace ironkey {
+
+const std::array<uint8_t, 64> kPvc0Key = {
+    0x6a, 0xed, 0x67, 0xb9, 0x8b, 0xcf, 0x83, 0xf2, 0xa0, 0xd6, 0x22, 0x7f, 0xb8, 0xa3, 0x58, 0xc4,
+    0x74, 0xe7, 0xdb, 0x47, 0x2b, 0x9d, 0xdc, 0xd5, 0x09, 0xaf, 0x8b, 0xef, 0x1c, 0xb9, 0xc8, 0xb8,
+    0x94, 0x9c, 0xe6, 0x41, 0xcc, 0xaf, 0xe1, 0xd5, 0x84, 0x7d, 0x8d, 0xcc, 0x79, 0xe1, 0xba, 0x18,
+    0x21, 0x5c, 0x80, 0xb7, 0x5c, 0x4e, 0x10, 0xdd, 0x64, 0x42, 0xff, 0xac, 0xbc, 0xbd, 0x16, 0x84,
+};
+
+namespace {
+
+Bytes read_exact(Channel& ch, uint8_t sub, uint32_t len, const char* what)
+{
+    Bytes resp = ch.command(sub, 0x00, Direction::Read, {}, len);
+    if (resp.size() < len)
+        throw HandshakeError(std::string("Failed to read ") + what);
+    return resp;
+}
+
+}  // namespace
+
+Bytes clamp_to_modulus(ByteView buf, ByteView n_dev)
+{
+    Bytes b(buf.begin(), buf.end());
+    uint8_t top = n_dev[63] > 0 ? n_dev[63] - 1 : 0;
+    for (size_t i = b.size(); i-- > 0;) {
+        if (b[i] != 0) {
+            b[i] = top;
+            break;
+        }
+    }
+    return b;
+}
+
+Bytes encrypt_pvc_key(ByteView pvc0_key, const Key128& shared, ByteView random32)
+{
+    std::array<uint8_t, 64> local{};
+
+    auto hash1 = sha256(pvc0_key);
+    std::copy(hash1.begin(), hash1.end(), local.begin());
+    std::copy(shared.begin(), shared.end(), local.begin() + 32);
+
+    auto hash2 = sha256(ByteView(local.data(), 48));
+    std::copy(hash2.begin(), hash2.end(), local.begin());
+    std::copy(random32.begin(), random32.begin() + 32, local.begin() + 32);
+
+    Bytes result;
+    result.reserve(64);
+    for (size_t i = 0; i < 4; ++i) {
+        Key128 block = aes128_ecb_encrypt(shared, ByteView(local.data() + i * 16, 16));
+        result.insert(result.end(), block.begin(), block.end());
+    }
+    secure_wipe(local.data(), local.size());
+    return result;
+}
+
+Key128 rsa_handshake(Channel& ch, Random& rng, const RsaKey& host)
+{
+    ch.drain();
+
+    // FF 81: device public key
+    Bytes dev_pub = read_exact(ch, 0x81, 128, "device public key (FF 81)");
+    ByteView n_dev(dev_pub.data(), 64);
+    ByteView e_dev(dev_pub.data() + 64, 64);
+
+    // FF 82: host public key
+    Bytes host_pub = host.n;
+    host_pub.insert(host_pub.end(), host.e.begin(), host.e.end());
+    ch.command(0x82, 0x00, Direction::Write, host_pub);
+
+    // FF 83: host challenge r1, sent in the clear
+    Bytes r1 = clamp_to_modulus(rng.bytes(64), n_dev);
+    ch.command(0x83, 0x00, Direction::Write, r1);
+
+    // FF 84: device signature over r1 (not verified, as in the vendor app)
+    read_exact(ch, 0x84, 64, "device signature (FF 84)");
+
+    // FF 85 / 86: prove possession of the host private key
+    Bytes nonce_dev = read_exact(ch, 0x85, 64, "device nonce (FF 85)");
+    ch.command(0x86, 0x00, Direction::Write, mod_exp_le(nonce_dev, host.d, host.n));
+
+    // FF 87: r2 encrypted to the device
+    Bytes r2 = clamp_to_modulus(rng.bytes(64), n_dev);
+    ch.command(0x87, 0x00, Direction::Write, mod_exp_le(r2, e_dev, n_dev));
+
+    // FF 88: device secret, encrypted to the host
+    Bytes sig2 = read_exact(ch, 0x88, 64, "device secret (FF 88)");
+    Bytes r_dev = mod_exp_le(sig2, host.d, host.n);
+
+    Key128 shared{};
+    for (size_t i = 0; i < shared.size(); ++i)
+        shared[i] = r2[i] ^ r_dev[i];
+
+    secure_wipe(r2.data(), r2.size());
+    secure_wipe(r_dev.data(), r_dev.size());
+    return shared;
+}
+
+void send_unlock(Channel& ch, const Key128& shared, std::string_view password, Random& rng)
+{
+    if (password.size() > kMaxPasswordBytes)
+        throw UnlockError("Password too long (max 16 bytes)");
+
+    Bytes random32 = rng.bytes(32);
+    Bytes pvc_payload = encrypt_pvc_key(kPvc0Key, shared, random32);
+
+    // FF 8B: start secure access, secureType=3
+    ch.command(0x8B, 0x00, Direction::None, {}, 0, {0x00, 0x03});
+
+    // FF 8F: PVCFuncOpen
+    ch.command(0x8F, 0x00, Direction::Write, pvc_payload, 0, {0x02});
+
+    // FF A4: NTU_Open with the zero-padded, encrypted password
+    std::array<uint8_t, 16> plaintext{};
+    std::copy(password.begin(), password.end(), plaintext.begin());
+    Key128 encrypted_pw = aes128_ecb_encrypt(shared, plaintext);
+    secure_wipe(plaintext.data(), plaintext.size());
+    ch.command(0xA4, 0x00, Direction::Write, encrypted_pw, 16, {0x00, 0x00, 0x00, 0x06});
+
+    // FF 89: commit
+    ch.command(0x89, 0x00, Direction::None);
+}
+
+void unlock(HidDevice& dev, std::string_view password)
+{
+    Channel ch(dev);
+    SystemRandom rng;
+    RsaKey host = RsaKey::generate512();
+    Key128 shared = rsa_handshake(ch, rng, host);
+    send_unlock(ch, shared, password, rng);
+    secure_wipe(shared.data(), shared.size());
+}
+
+}  // namespace ironkey

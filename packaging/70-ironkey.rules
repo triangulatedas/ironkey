@@ -1,0 +1,15 @@
+# Kingston IronKey Locker+: give the user at the local seat access to the
+# raw USB and hidraw nodes, so ironkey-agent can unlock without root.
+# Must sort before 73-seat-late.rules, which applies the uaccess tag.
+
+ACTION=="remove", GOTO="ironkey_end"
+
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0951", \
+  ATTR{product}=="*IronKey*|*Ironkey*|*IRONKEY*|*Locker*|*LOCKER*", \
+  TAG+="uaccess", TAG+="ironkey"
+
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0951", \
+  ATTRS{product}=="*IronKey*|*Ironkey*|*IRONKEY*|*Locker*|*LOCKER*", \
+  TAG+="uaccess", TAG+="ironkey"
+
+LABEL="ironkey_end"
