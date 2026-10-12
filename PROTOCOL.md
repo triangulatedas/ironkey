@@ -338,8 +338,12 @@ FF A4's CDB[4] selects the account. With admin and user passwords both set:
   (CDB `00 01 00 06`).
 - GetAreaParams looks the same in an admin and a user session (apart from the
   changing 0x21–0x23 value), so it does not show which account logged in.
-- Kingston's manual says each account has its own failed-login counter. Only
-  the admin counter (0x0C) has been located; the user counter has not.
+- FF A4 status byte 0x06 flags a wrong password for both accounts.
+- Each account has its own failed-login counter, as Kingston's manual says: a
+  failed user login leaves GetAreaParams 0x0C (admin) unchanged. The **user
+  counter is not exposed by FF 21 or FF A0**. A failed user login changed
+  only GetConfig 0x0B (session flag) and GetAreaParams 0x23 (varies every
+  session). The vendor app probably reads it with a command not yet known.
 
 The original single-password set-up (as used by the Python tool) also logs
 in with index 0.

@@ -32,9 +32,12 @@ std::string human_size(uint64_t bytes)
     return buf;
 }
 
+// Progress and trace output. Flushed immediately so it stays in order with
+// errors printed to stderr when both go to the same file.
 void print_log(const std::string& msg)
 {
     std::printf("%s\n", msg.c_str());
+    std::fflush(stdout);
 }
 
 // Password string that is wiped when it goes out of scope.
@@ -166,7 +169,10 @@ int cmd_dump(const std::string& port, bool with_session)
     std::printf("%s, %s\n", describe(dev).c_str(), dev.hidraw.front().c_str());
 
     HidrawDevice hid(dev.hidraw.front());
-    TracingHidDevice traced(hid, [](const std::string& s) { std::fputs(s.c_str(), stdout); });
+    TracingHidDevice traced(hid, [](const std::string& s) {
+        std::fputs(s.c_str(), stdout);
+        std::fflush(stdout);
+    });
     Channel ch(traced);
     ch.drain();
 
