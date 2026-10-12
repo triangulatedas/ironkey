@@ -104,6 +104,9 @@ void change_password(HidDevice& dev, std::string_view old_password, std::string_
 // after a re-key during reset/initialize. The drive must be in HID mode.
 void set_password(HidDevice& dev, std::string_view new_password, Account account = Account::Admin);
 
+// NOTE: does NOT correctly set the password yet - the FF A2 token needs its
+// real plaintext (see PROTOCOL.md); the re-key/crypto-erase works but the
+// password ends up undefined. Not wired into the CLI.
 // Full factory reset / initialize (the vendor "Reset Device" flow): mode flag,
 // a committed area re-key (crypto-erase, DESTROYS ALL DATA), then sets
 // `new_password`. The drive must be in HID mode; no old password is needed.
