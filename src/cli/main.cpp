@@ -6,6 +6,7 @@
 
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -13,6 +14,7 @@
 
 #include "linux/device_ops.h"
 #include "linux/hidraw_device.h"
+#include "linux/scsi_transport.h"
 #include "linux/usb_topology.h"
 #include "linux/volumes.h"
 #include "proto/session.h"
@@ -140,6 +142,48 @@ int cmd_hid_mode(const std::string& port)
         return 1;
     ensure_hid_mode(dev, print_log);
     std::printf("%s is in HID mode (%s)\n", describe(dev).c_str(), dev.hidraw.front().c_str());
+    return 0;
+}
+
+// Locates the setcap'd SCSI helper: $IRONKEY_SCSI_HELPER, else next to this
+// executable, else on PATH.
+std::string find_scsi_helper()
+{
+    if (const char* e = std::getenv("IRONKEY_SCSI_HELPER"))
+        return e;
+    char buf[4096];
+    ssize_t n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        std::string p(buf);
+        auto slash = p.rfind('/');
+        if (slash != std::string::npos)
+            return p.substr(0, slash + 1) + "ironkey-scsi-helper";
+    }
+    return "ironkey-scsi-helper";
+}
+
+// Diagnostic: read GetAreaParams (FF A0) over the SCSI/SG_IO path (via the
+// helper) to validate the transport. The drive must be in normal storage mode.
+int cmd_scsi_probe(const std::string& port)
+{
+    UsbDevice dev;
+    if (!select_device(port, dev))
+        return 1;
+    if (dev.disks.empty()) {
+        std::fprintf(stderr, "No storage node. The drive must be in normal (not HID) mode; "
+                             "replug it if it is stuck in HID mode.\n");
+        return 1;
+    }
+    std::string node = dev.disks.front().node;
+    std::printf("SCSI probe on %s via %s\n", node.c_str(), find_scsi_helper().c_str());
+    ScsiTransport st(find_scsi_helper(), node);
+    Channel ch(st);
+    ch.drain();
+    AreaParams p = read_area_params(ch);
+    std::printf("FF A0 OK: data_sectors=%u (%.1f GiB) unlocked=%d admin_failed=%u flags=0x%02x\n",
+                p.data_sectors, p.data_sectors * 512.0 / (1u << 30), p.unlocked,
+                p.admin_failed_attempts, p.account_flags);
     return 0;
 }
 
@@ -653,6 +697,8 @@ int main(int argc, char** argv)
             return cmd_info(port);
         if (cmd == "format")
             return cmd_format(port, fstype, label);
+        if (cmd == "scsi-probe")
+            return cmd_scsi_probe(port);
         if (cmd == "format-replay")
             return cmd_format_replay(port);
         if (cmd == "lock")

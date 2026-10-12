@@ -36,6 +36,7 @@ add_library(ironkey_linux STATIC
     src/linux/usbfs.cpp
     src/linux/volumes.cpp
     src/linux/device_ops.cpp
+    src/linux/scsi_transport.cpp
     src/linux/udev_monitor.cpp
 )
 target_link_libraries(ironkey_linux PUBLIC ironkey_proto PRIVATE PkgConfig::UDEV PkgConfig::SYSTEMD)
@@ -54,7 +55,14 @@ add_executable(ironkey-agent
 target_link_libraries(ironkey-agent PRIVATE ironkey_linux PkgConfig::SYSTEMD)
 target_compile_options(ironkey-agent PRIVATE ${IRONKEY_WARNINGS})
 
-install(TARGETS ironkey-unlock ironkey-agent RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+# Tiny privileged helper: only issues SG_IO. Install with
+# `setcap cap_sys_rawio+ep` so the unprivileged main tool can send vendor
+# commands over SCSI without holding the capability itself.
+add_executable(ironkey-scsi-helper src/linux/scsi_helper_main.cpp)
+target_compile_options(ironkey-scsi-helper PRIVATE ${IRONKEY_WARNINGS})
+
+install(TARGETS ironkey-unlock ironkey-agent ironkey-scsi-helper
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES packaging/70-ironkey.rules DESTINATION lib/udev/rules.d)
 install(FILES packaging/ironkey-agent.service DESTINATION lib/systemd/user)
 

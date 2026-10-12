@@ -12,4 +12,15 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0951", \
   ATTRS{product}=="*IronKey*|*Ironkey*|*IRONKEY*|*Locker*|*LOCKER*", \
   TAG+="uaccess", TAG+="ironkey"
 
+# The storage and SCSI-generic nodes, so the setcap'd ironkey-scsi-helper (run
+# by a user in plugdev) can send vendor commands over SG_IO — the replug-free
+# SCSI path. CAP_SYS_RAWIO (on the helper) is still required for opcode 0xFF.
+SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", ATTRS{idVendor}=="0951", \
+  ATTRS{product}=="*IronKey*|*Ironkey*|*IRONKEY*|*Locker*|*LOCKER*", \
+  GROUP="plugdev", MODE="0660", TAG+="ironkey"
+
+SUBSYSTEM=="scsi_generic", ATTRS{idVendor}=="0951", \
+  ATTRS{product}=="*IronKey*|*Ironkey*|*IRONKEY*|*Locker*|*LOCKER*", \
+  GROUP="plugdev", MODE="0660", TAG+="ironkey"
+
 LABEL="ironkey_end"
