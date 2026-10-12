@@ -308,16 +308,24 @@ void reset_device(HidDevice& dev, std::string_view new_password, Account account
         ch.command(0xA2, 0x00, Direction::Write, payload, 20,
                    {0x00, static_cast<uint8_t>(account), 0x00, 0x41, 0xA2, 0x00, 0x00, 0x00});
         ch.command(0x89, 0x00, Direction::None);
+
+        // 2b. Region prep (FF 07). Three fixed commands, sent in the same
+        //     post-commit state as the capture, that re-establish the data
+        //     partition's geometry so it presents at full size. Without these
+        //     the drive accepts the password but shows a 0-sector disk. The
+        //     offset/length pairs are identical across both reset captures for
+        //     this model (CDB bytes: 01 00 <off LE32> <len LE32>).
+        ch.command(0x07, 0x01, Direction::None, {}, 0, {0x00, 0xD0, 0x20, 0x00, 0x00, 0x80, 0x39, 0x00});
+        ch.command(0x07, 0x01, Direction::None, {}, 0, {0x00, 0x48, 0x5A, 0x00, 0x00, 0x80, 0x39, 0x00});
+        ch.command(0x07, 0x01, Direction::None, {}, 0, {0x00, 0xC0, 0x93, 0x00, 0x00, 0x40, 0x00, 0x00});
         secure_wipe(k.data(), k.size());
     }
 
-    // 3. Close the provisioning session (FF A5 = NTU_Close).
-    ch.command(0xA5, 0x00, Direction::None);
-
-    // 4. Mode flag again.
+    // 3. Mode flag again: this re-presents the data disk at full size after the
+    //    region prep (the capture reads full READ CAPACITY right after it).
     mode_flag();
 
-    // 5. Verify by logging in with the new password (FF A4 = NTU_Open). The
+    // 4. Verify by logging in with the new password (FF A4 = NTU_Open). The
     //    vendor app does this post-set login; a wrong-password report here
     //    (status byte 6 set) would mean the FF A2 token did not take.
     {
@@ -332,12 +340,8 @@ void reset_device(HidDevice& dev, std::string_view new_password, Account account
             throw UnlockError("Reset completed the re-key but the new password did not verify");
     }
 
-    // NOTE: the crypto-erase leaves the data PARTITION at 0 sectors; the drive
-    // will accept the new password (login succeeds) but not yet present a data
-    // disk. The vendor "Format" step re-activates the partition — a domain
-    // stop/start (FF 26/40/41) around a resize (MyResizeCDPartition, using
-    // NTU_Calculate_Closest). That sequence is not implemented here yet, so a
-    // just-reset drive is provisioned but shows no data volume until formatted.
+    // After this the data area is blank (crypto-erased); create a filesystem on
+    // the now-present data partition with mkfs.
 }
 
 void set_password(HidDevice& dev, std::string_view new_password, Account account)
