@@ -241,9 +241,8 @@ int cmd_unlock(const std::string& port, std::optional<Account> requested, bool p
         std::fprintf(stderr, "No password given.\n");
         return 1;
     }
-    if (pw.value.size() > kMaxPasswordBytes) {
-        std::fprintf(stderr, "Password longer than 16 bytes; nothing was sent. Passphrase mode "
-                             "(10-64 characters) is not supported yet.\n");
+    if (pw.value.size() > kMaxPassphraseBytes) {
+        std::fprintf(stderr, "Password longer than 64 characters; nothing was sent.\n");
         return 1;
     }
 
@@ -436,7 +435,7 @@ int cmd_reset_selftest(const std::string& port)
 
 // Factory reset / forgot-password recovery: wipes the drive (crypto-erase) and
 // sets a brand-new password. No old password needed.
-int cmd_reset(const std::string& port)
+int cmd_reset(const std::string& port, bool password_stdin)
 {
     UsbDevice dev;
     if (!select_device(port, dev))
@@ -448,23 +447,30 @@ int cmd_reset(const std::string& port)
                  "RESET erases ALL DATA on %s and sets a new password.\n"
                  "This cannot be undone. No current password is needed.\n\n%s\n\n",
                  describe(dev).c_str(), kUntrustedHostWarning);
-    Password confirm_word;
-    if (!read_password_tty("Type ERASE to continue: ", confirm_word) ||
-        confirm_word.value != "ERASE") {
-        std::fprintf(stderr, "Cancelled; nothing was changed.\n");
-        return 1;
-    }
 
-    Password new_pw, confirm;
-    read_password_tty("New password: ", new_pw);
-    read_password_tty("Confirm new password: ", confirm);
-    if (new_pw.value != confirm.value) {
-        std::fprintf(stderr, "Passwords do not match; nothing was changed.\n");
-        return 1;
+    Password new_pw;
+    if (password_stdin) {
+        // Scriptable: read the new password (1-64 chars) from stdin, no prompts.
+        if (!read_password_stdin(new_pw)) {
+            std::fprintf(stderr, "No password on stdin; nothing was changed.\n");
+            return 1;
+        }
+    } else {
+        Password confirm_word, confirm;
+        if (!read_password_tty("Type ERASE to continue: ", confirm_word) ||
+            confirm_word.value != "ERASE") {
+            std::fprintf(stderr, "Cancelled; nothing was changed.\n");
+            return 1;
+        }
+        read_password_tty("New password: ", new_pw);
+        read_password_tty("Confirm new password: ", confirm);
+        if (new_pw.value != confirm.value) {
+            std::fprintf(stderr, "Passwords do not match; nothing was changed.\n");
+            return 1;
+        }
     }
-    if (new_pw.value.empty() || new_pw.value.size() > kMaxPasswordBytes) {
-        std::fprintf(stderr, "New password must be 1 to 16 bytes (passphrase mode is not "
-                             "supported yet); nothing was changed.\n");
+    if (new_pw.value.empty() || new_pw.value.size() > kMaxPassphraseBytes) {
+        std::fprintf(stderr, "New password must be 1 to 64 characters; nothing was changed.\n");
         return 1;
     }
 
@@ -523,7 +529,7 @@ int main(int argc, char** argv)
         std::string_view arg = argv[i];
         if (arg == "--device" && i + 1 < argc) {
             port = argv[++i];
-        } else if (arg == "--password-stdin" && cmd == "unlock") {
+        } else if (arg == "--password-stdin" && (cmd == "unlock" || cmd == "reset")) {
             password_stdin = true;
         } else if (arg == "--trace" && cmd == "unlock") {
             trace = true;
@@ -556,7 +562,7 @@ int main(int argc, char** argv)
         if (cmd == "reset-probe")
             return cmd_reset_probe(port);
         if (cmd == "reset")
-            return cmd_reset(port);
+            return cmd_reset(port, password_stdin);
         if (cmd == "reset-selftest")
             return cmd_reset_selftest(port);
         if (cmd == "format-replay")

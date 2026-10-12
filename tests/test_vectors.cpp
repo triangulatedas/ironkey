@@ -169,6 +169,8 @@ TEST(password_too_long_is_rejected_before_sending)
     ReplayDevice dev;
     Channel ch(dev);
     StreamRandom rng(Bytes(32));
-    CHECK_THROWS_AS(send_unlock(ch, Key128{}, "this-is-17-bytes!", rng), UnlockError);
+    // 65 characters exceeds the passphrase limit (64).
+    std::string too_long(65, 'x');
+    CHECK_THROWS_AS(send_unlock(ch, Key128{}, too_long, rng), UnlockError);
     CHECK(dev.writes.empty());
 }

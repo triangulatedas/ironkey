@@ -22,6 +22,38 @@ Bytes read_exact(Channel& ch, uint8_t sub, uint32_t len, const char* what)
     return resp;
 }
 
+// FF A4 login / verify payload (always one block): the first 16 bytes of the
+// password, AES-encrypted. A passphrase is checked on its first block only,
+// so this is identical for complex passwords and passphrases.
+Key128 encrypt_login(const Key128& shared, std::string_view password)
+{
+    std::array<uint8_t, 16> plaintext{};
+    std::copy_n(password.begin(), std::min<size_t>(password.size(), 16), plaintext.begin());
+    Key128 enc = aes128_ecb_encrypt(shared, plaintext);
+    secure_wipe(plaintext.data(), plaintext.size());
+    return enc;
+}
+
+// FF A2 set token: 16 bytes for a complex password (<= 16 chars), or 32 bytes
+// for a passphrase (the first 32 chars, zero-padded, as two ECB blocks). The
+// device stores this and infers the password mode from the length.
+Bytes make_set_token(const Key128& shared, std::string_view password)
+{
+    std::array<uint8_t, 16> b0{}, b1{};
+    std::copy_n(password.begin(), std::min<size_t>(password.size(), 16), b0.begin());
+    Key128 e0 = aes128_ecb_encrypt(shared, b0);
+    secure_wipe(b0.data(), b0.size());
+    Bytes out(e0.begin(), e0.end());
+    if (password.size() > kMaxPasswordBytes) {
+        size_t n = std::min<size_t>(password.size() - 16, 16);
+        std::copy_n(password.begin() + 16, n, b1.begin());
+        Key128 e1 = aes128_ecb_encrypt(shared, b1);
+        secure_wipe(b1.data(), b1.size());
+        out.insert(out.end(), e1.begin(), e1.end());
+    }
+    return out;
+}
+
 }  // namespace
 
 Bytes clamp_to_modulus(ByteView buf, ByteView n_dev)
@@ -109,9 +141,8 @@ const char* to_string(Account account)
 void send_unlock(Channel& ch, const Key128& shared, std::string_view password, Random& rng,
                  Account account)
 {
-    if (password.size() > kMaxPasswordBytes)
-        throw UnlockError("Password longer than 16 bytes. Passphrase mode (10-64 characters) "
-                          "is not supported yet");
+    if (password.size() > kMaxPassphraseBytes)
+        throw UnlockError("Password longer than 64 characters");
 
     Bytes random32 = rng.bytes(32);
     Bytes pvc_payload = encrypt_pvc_key(kPvc0Key, shared, random32);
@@ -122,12 +153,9 @@ void send_unlock(Channel& ch, const Key128& shared, std::string_view password, R
     // FF 8F: PVCFuncOpen
     ch.command(0x8F, 0x00, Direction::Write, pvc_payload, 0, {0x02});
 
-    // FF A4: NTU_Open with the zero-padded, encrypted password.
+    // FF A4: NTU_Open with the zero-padded, encrypted password (first block).
     // CDB: secureType=0, userIDIndex, timeInterval=0, autoLogout=6.
-    std::array<uint8_t, 16> plaintext{};
-    std::copy(password.begin(), password.end(), plaintext.begin());
-    Key128 encrypted_pw = aes128_ecb_encrypt(shared, plaintext);
-    secure_wipe(plaintext.data(), plaintext.size());
+    Key128 encrypted_pw = encrypt_login(shared, password);
     ch.command(0xA4, 0x00, Direction::Write, encrypted_pw, 16,
                {0x00, static_cast<uint8_t>(account), 0x00, 0x06});
     // Status stays 0 for a wrong password; byte 6 of the report is set instead.
@@ -140,22 +168,6 @@ void send_unlock(Channel& ch, const Key128& shared, std::string_view password, R
     if (rejected)
         throw WrongPasswordError("Wrong password");
 }
-
-namespace {
-
-Key128 encrypt_password(const Key128& shared, std::string_view password)
-{
-    if (password.size() > kMaxPasswordBytes)
-        throw UnlockError("Password longer than 16 bytes. Passphrase mode (10-64 characters) "
-                          "is not supported yet");
-    std::array<uint8_t, 16> plaintext{};
-    std::copy(password.begin(), password.end(), plaintext.begin());
-    Key128 enc = aes128_ecb_encrypt(shared, plaintext);
-    secure_wipe(plaintext.data(), plaintext.size());
-    return enc;
-}
-
-}  // namespace
 
 void send_change_password(Channel& ch, const Key128& shared, std::string_view old_password,
                           std::string_view new_password, Random& rng, Account account)
@@ -170,8 +182,8 @@ void send_change_password(Channel& ch, const Key128& shared, std::string_view ol
     // FF A6 (admin) / FF A8 (user): 32 bytes = enc(old) || enc(new).
     // The device verifies the old block against the current password and
     // rejects (non-zero status) if it is wrong, so nothing changes.
-    Key128 enc_old = encrypt_password(shared, old_password);
-    Key128 enc_new = encrypt_password(shared, new_password);
+    Key128 enc_old = encrypt_login(shared, old_password);
+    Key128 enc_new = encrypt_login(shared, new_password);
     Bytes payload(enc_old.begin(), enc_old.end());
     payload.insert(payload.end(), enc_new.begin(), enc_new.end());
 
@@ -258,9 +270,8 @@ void change_password(HidDevice& dev, std::string_view old_password, std::string_
 
 void reset_device(HidDevice& dev, std::string_view new_password, Account account)
 {
-    if (new_password.empty() || new_password.size() > kMaxPasswordBytes)
-        throw UnlockError("New password must be 1 to 16 bytes. Passphrase mode (10-64 "
-                          "characters) is not supported yet");
+    if (new_password.empty() || new_password.size() > kMaxPassphraseBytes)
+        throw UnlockError("New password must be 1 to 64 characters");
     Channel ch(dev);
     SystemRandom rng;
 
@@ -301,11 +312,11 @@ void reset_device(HidDevice& dev, std::string_view new_password, Account account
     //    login/verify. (Confirmed by disassembling the macOS vendor app.)
     {
         Key128 k = open_session();
-        Key128 token = encrypt_password(k, new_password);
+        Bytes token = make_set_token(k, new_password);  // 16 (complex) or 32 (passphrase)
         Bytes payload = {static_cast<uint8_t>(sectors), static_cast<uint8_t>(sectors >> 8),
                          static_cast<uint8_t>(sectors >> 16), static_cast<uint8_t>(sectors >> 24)};
         payload.insert(payload.end(), token.begin(), token.end());
-        ch.command(0xA2, 0x00, Direction::Write, payload, 20,
+        ch.command(0xA2, 0x00, Direction::Write, payload, static_cast<uint32_t>(payload.size()),
                    {0x00, static_cast<uint8_t>(account), 0x00, 0x41, 0xA2, 0x00, 0x00, 0x00});
         ch.command(0x89, 0x00, Direction::None);
 
@@ -330,7 +341,7 @@ void reset_device(HidDevice& dev, std::string_view new_password, Account account
     //    (status byte 6 set) would mean the FF A2 token did not take.
     {
         Key128 k = open_session();
-        Key128 enc_pw = encrypt_password(k, new_password);
+        Key128 enc_pw = encrypt_login(k, new_password);
         ch.command(0xA4, 0x00, Direction::Write, enc_pw, 16,
                    {0x00, static_cast<uint8_t>(account), 0x00, 0x06});
         bool rejected = ch.last_status.size() > 6 && ch.last_status[6] != 0;
@@ -346,9 +357,8 @@ void reset_device(HidDevice& dev, std::string_view new_password, Account account
 
 void set_password(HidDevice& dev, std::string_view new_password, Account account)
 {
-    if (new_password.empty() || new_password.size() > kMaxPasswordBytes)
-        throw UnlockError("New password must be 1 to 16 bytes. Passphrase mode (10-64 "
-                          "characters) is not supported yet");
+    if (new_password.empty() || new_password.size() > kMaxPassphraseBytes)
+        throw UnlockError("New password must be 1 to 64 characters");
     Channel ch(dev);
     SystemRandom rng;
 
@@ -366,11 +376,11 @@ void set_password(HidDevice& dev, std::string_view new_password, Account account
     ch.command(0x8B, 0x00, Direction::None, {}, 0, {0x00, 0x03});
     ch.command(0x8F, 0x00, Direction::Write, pvc_payload, 0, {0x02});
 
-    Key128 token = encrypt_password(shared, new_password);
+    Bytes token = make_set_token(shared, new_password);  // 16 (complex) or 32 (passphrase)
     Bytes payload = {static_cast<uint8_t>(sectors), static_cast<uint8_t>(sectors >> 8),
                      static_cast<uint8_t>(sectors >> 16), static_cast<uint8_t>(sectors >> 24)};
     payload.insert(payload.end(), token.begin(), token.end());
-    ch.command(0xA2, 0x00, Direction::Write, payload, 20,
+    ch.command(0xA2, 0x00, Direction::Write, payload, static_cast<uint32_t>(payload.size()),
                {0x00, static_cast<uint8_t>(account), 0x00, 0x41, 0xA2, 0x00, 0x00, 0x00});
     ch.command(0x89, 0x00, Direction::None);
     secure_wipe(shared.data(), shared.size());

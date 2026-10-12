@@ -53,9 +53,8 @@ void ensure_hid_mode(UsbDevice& dev, const Log& log)
 void unlock_device(UsbDevice& dev, std::string_view password, const Login& login,
                    const Log& log, bool trace)
 {
-    if (password.size() > kMaxPasswordBytes)
-        throw UnlockError("Password longer than 16 bytes. Passphrase mode (10-64 characters) "
-                          "is not supported yet");
+    if (password.size() > kMaxPassphraseBytes)
+        throw UnlockError("Password longer than 64 characters");
     if (!dev.in_hid_mode())
         throw IronKeyError("Device is not in HID mode");
 

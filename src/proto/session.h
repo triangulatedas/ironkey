@@ -26,7 +26,11 @@ public:
     using UnlockError::UnlockError;
 };
 
+// A complex password is at most 16 bytes (one AES block). Passphrase mode
+// accepts up to 64 characters; the device stores the first 32 and, at login,
+// verifies only the first 16 (one block) — see session.cpp.
 constexpr size_t kMaxPasswordBytes = 16;
+constexpr size_t kMaxPassphraseBytes = 64;
 
 // Which password to log in with: FF A4 CDB[4] (userIDIndex).
 enum class Account : uint8_t {
