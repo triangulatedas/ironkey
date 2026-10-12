@@ -108,7 +108,8 @@ void Agent::start(const std::string& port)
     log(port, "IronKey connected");
     auto w = std::make_unique<Worker>();
     Worker& ref = *w;
-    w->thread = std::thread([&ref, port, dry_run = dry_run_] { run(ref, port, dry_run); });
+    w->thread = std::thread(
+        [&ref, port, dry_run = dry_run_, account = account_] { run(ref, port, dry_run, account); });
     workers_.emplace(port, std::move(w));
 }
 
@@ -123,7 +124,7 @@ void Agent::stop(const std::string& port)
     workers_.erase(it);
 }
 
-void Agent::run(Worker& w, const std::string& port, DryRun dry_run)
+void Agent::run(Worker& w, const std::string& port, DryRun dry_run, Account account)
 {
     auto worker_log = [&port](const std::string& msg) { log(port, msg); };
     auto finish = [&w](State s) { w.state = s; };
@@ -149,9 +150,9 @@ void Agent::run(Worker& w, const std::string& port, DryRun dry_run)
         if (PasswordDialog::program().empty())
             throw IronKeyError("No password dialog available. Install zenity or kdialog.");
 
-        auto prompt = [&dev](const std::string& note) {
-            return (note.empty() ? "" : note + "\n\n") + "Enter the password for " +
-                   describe(dev) + ", or cancel to leave it locked.";
+        auto prompt = [&dev, account](const std::string& note) {
+            return (note.empty() ? "" : note + "\n\n") + "Enter the " + to_string(account) +
+                   " password for " + describe(dev) + ", or cancel to leave it locked.";
         };
 
         // Switch to HID mode before asking, so the drive's own failed-login
@@ -160,9 +161,9 @@ void Agent::run(Worker& w, const std::string& port, DryRun dry_run)
         if (dry_run == DryRun::Off) {
             w.state = State::Switching;
             ensure_hid_mode(dev, worker_log);
-            if (auto failed = read_failed_attempts(dev); failed && *failed > 0) {
-                log(port, failed_attempts_warning(*failed));
-                note = "Warning: " + failed_attempts_warning(*failed) + ".";
+            if (auto failed = read_failed_attempts(dev, account); failed && *failed > 0) {
+                log(port, failed_attempts_warning(*failed, account));
+                note = "Warning: " + failed_attempts_warning(*failed, account) + ".";
             }
         }
         std::string message = prompt(note);
@@ -179,8 +180,8 @@ void Agent::run(Worker& w, const std::string& port, DryRun dry_run)
 
             if (password->empty() || password->size() > kMaxPasswordBytes) {
                 secure_wipe(password->data(), password->capacity());
-                message = prompt("The password must be 1 to 16 characters. Nothing was sent "
-                                 "to the drive.");
+                message = prompt("The password must be 1 to 16 characters (passphrase mode is "
+                                 "not supported yet). Nothing was sent to the drive.");
                 continue;
             }
 
@@ -200,7 +201,7 @@ void Agent::run(Worker& w, const std::string& port, DryRun dry_run)
                 w.state = State::Switching;
                 ensure_hid_mode(dev, worker_log);
                 w.state = State::Unlocking;
-                unlock_device(dev, *password, worker_log);
+                unlock_device(dev, *password, account, worker_log);
                 secure_wipe(password->data(), password->capacity());
             } catch (const NotUnlockedError& e) {
                 secure_wipe(password->data(), password->capacity());

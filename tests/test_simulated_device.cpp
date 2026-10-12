@@ -19,13 +19,20 @@ namespace {
 
 class SimulatedIronKey : public HidDevice {
 public:
-    explicit SimulatedIronKey(std::string password) : password_(std::move(password)) {}
+    // `user_password` empty = single-password drive (only index 0 exists).
+    explicit SimulatedIronKey(std::string admin_password, std::string user_password = "")
+        : passwords_{std::move(admin_password), std::move(user_password)}
+    {
+    }
 
     bool unlocked = false;
     bool host_proved_key = false;
     bool pvc_open = false;
     bool password_ok = false;
-    uint8_t failed_attempts = 0;
+    // Per-account counters, as the manual describes. Only the admin counter's
+    // location in GetAreaParams (0x0C) is known.
+    uint8_t failed_attempts[2] = {0, 0};
+    uint8_t last_account = 0xFF;
 
     void write_output(ByteView report) override
     {
@@ -101,7 +108,7 @@ private:
             Bytes r(0x200, 0);
             r[0] = 0x00, r[1] = 0x40, r[2] = 0x2F, r[3] = 0x07;
             r[0x08] = unlocked ? 1 : 0;
-            r[0x0C] = failed_attempts;
+            r[0x0C] = failed_attempts[0];
             return r;
         }
         case 0x88: {
@@ -148,12 +155,18 @@ private:
             return 0;
         }
         case 0xA4: {
-            std::array<uint8_t, 16> expected{};
-            std::memcpy(expected.data(), password_.data(), password_.size());
-            auto enc = aes128_ecb_encrypt(shared_, expected);
-            password_ok = std::equal(enc.begin(), enc.end(), data.begin());
+            last_account = cdb_[1];
+            const std::string* pw = last_account < 2 ? &passwords_[last_account] : nullptr;
+            password_ok = false;
+            if (pw && !pw->empty()) {
+                std::array<uint8_t, 16> expected{};
+                std::memcpy(expected.data(), pw->data(), pw->size());
+                auto enc = aes128_ecb_encrypt(shared_, expected);
+                password_ok = std::equal(enc.begin(), enc.end(), data.begin());
+            }
             if (!password_ok) {
-                ++failed_attempts;
+                if (last_account < 2)
+                    ++failed_attempts[last_account];
                 result_ = 1;
             }
             return 0;
@@ -161,13 +174,13 @@ private:
         case 0x89:
             unlocked = host_proved_key && pvc_open && password_ok;
             if (unlocked)
-                failed_attempts = 0;
+                failed_attempts[last_account] = 0;
             return 0;
         }
         throw check::Failure{"unexpected write command " + std::to_string(sub_)};
     }
 
-    std::string password_;
+    std::string passwords_[2];
     SystemRandom rng_;
     RsaKey key_ = RsaKey::generate512();
     Bytes host_n_, host_e_, r1_, r2_, nonce_, response_;
@@ -182,14 +195,15 @@ private:
     std::deque<Bytes> inputs_;
 };
 
-void run_unlock(SimulatedIronKey& dev, std::string_view password)
+void run_unlock(SimulatedIronKey& dev, std::string_view password,
+                Account account = Account::Admin)
 {
     Channel ch(dev);
     ch.read_delay = std::chrono::milliseconds(0);
     SystemRandom rng;
     RsaKey host = RsaKey::generate512();
     Key128 shared = rsa_handshake(ch, rng, host);
-    send_unlock(ch, shared, password, rng);
+    send_unlock(ch, shared, password, rng, account);
 }
 
 }  // namespace
@@ -228,14 +242,44 @@ TEST(wrong_password_is_reported_and_counted)
     Channel ch(dev);
     ch.read_delay = std::chrono::milliseconds(0);
     AreaParams p = read_area_params(ch);
-    CHECK_EQ(int(p.failed_attempts), 2);
+    CHECK_EQ(int(p.admin_failed_attempts), 2);
     CHECK(!p.unlocked);
 
     run_unlock(dev, "right");
     CHECK(dev.unlocked);
     p = read_area_params(ch);
-    CHECK_EQ(int(p.failed_attempts), 0);
+    CHECK_EQ(int(p.admin_failed_attempts), 0);
     CHECK(p.unlocked);
+}
+
+TEST(user_and_admin_accounts_are_separate)
+{
+    SimulatedIronKey dev("admin-pw", "user-pw");
+
+    // The user password is wrong for the admin account (index 0), as observed
+    // on hardware, and counts against the admin.
+    CHECK_THROWS_AS(run_unlock(dev, "user-pw", Account::Admin), WrongPasswordError);
+    CHECK_EQ(int(dev.failed_attempts[0]), 1);
+
+    // A failed user login counts against the user only.
+    CHECK_THROWS_AS(run_unlock(dev, "admin-pw", Account::User), WrongPasswordError);
+    CHECK_EQ(int(dev.failed_attempts[1]), 1);
+    CHECK_EQ(int(dev.failed_attempts[0]), 1);
+
+    // A successful user login resets only the user counter.
+    run_unlock(dev, "user-pw", Account::User);
+    CHECK(dev.unlocked);
+    CHECK_EQ(int(dev.last_account), 1);
+    CHECK_EQ(int(dev.failed_attempts[1]), 0);
+    CHECK_EQ(int(dev.failed_attempts[0]), 1);
+}
+
+TEST(single_password_drive_has_no_user_account)
+{
+    SimulatedIronKey dev("only-pw");
+    CHECK_THROWS_AS(run_unlock(dev, "only-pw", Account::User), WrongPasswordError);
+    run_unlock(dev, "only-pw", Account::Admin);
+    CHECK(dev.unlocked);
 }
 
 // Replies captured from a real Locker+50G2 (see PROTOCOL.md, "Status queries").
@@ -274,6 +318,6 @@ TEST(decodes_real_get_area_params_replies)
         AreaParams p = read_area_params(ch);
         CHECK_EQ(p.data_sectors, 0x072F4000u);  // 61.7 GB
         CHECK_EQ(p.unlocked, c.unlocked);
-        CHECK_EQ(int(p.failed_attempts), c.failed);
+        CHECK_EQ(int(p.admin_failed_attempts), c.failed);
     }
 }

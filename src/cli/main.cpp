@@ -197,7 +197,7 @@ int cmd_dump(const std::string& port, bool with_session)
     return 0;
 }
 
-int cmd_unlock(const std::string& port, bool password_stdin, bool trace)
+int cmd_unlock(const std::string& port, Account account, bool password_stdin, bool trace)
 {
     UsbDevice dev;
     if (!select_device(port, dev))
@@ -211,23 +211,27 @@ int cmd_unlock(const std::string& port, bool password_stdin, bool trace)
     // Switch first so the failed-attempt count can be shown before the prompt.
     // A locked drive in HID mode is harmless; replugging returns it to normal.
     ensure_hid_mode(dev, print_log);
-    if (auto failed = read_failed_attempts(dev); failed && *failed > 0)
-        std::fprintf(stderr, "Warning: %s.\n", failed_attempts_warning(*failed).c_str());
+    if (auto failed = read_failed_attempts(dev, account); failed && *failed > 0)
+        std::fprintf(stderr, "Warning: %s.\n", failed_attempts_warning(*failed, account).c_str());
 
     Password pw;
     bool ok = password_stdin ? read_password_stdin(pw)
-                             : read_password_tty("Password for " + describe(dev) + ": ", pw);
+                             : read_password_tty(std::string(account == Account::User ? "User"
+                                                                                          : "Admin") +
+                                                     " password for " + describe(dev) + ": ",
+                                                 pw);
     if (!ok || pw.value.empty()) {
         std::fprintf(stderr, "No password given.\n");
         return 1;
     }
     if (pw.value.size() > kMaxPasswordBytes) {
-        std::fprintf(stderr, "Password too long (max 16 bytes); nothing was sent.\n");
+        std::fprintf(stderr, "Password longer than 16 bytes; nothing was sent. Passphrase mode "
+                             "(10-64 characters) is not supported yet.\n");
         return 1;
     }
 
     try {
-        unlock_device(dev, pw.value, print_log, trace);
+        unlock_device(dev, pw.value, account, print_log, trace);
     } catch (const NotUnlockedError& e) {
         std::fprintf(stderr, "%s.\n", e.what());
         return 3;
@@ -246,8 +250,12 @@ void usage()
         "\n"
         "Commands:\n"
         "  list                       Show connected Kingston devices (default)\n"
-        "  unlock [--password-stdin] [--trace]\n"
+        "  unlock [--admin | --user] [--password-stdin] [--trace]\n"
         "                             Unlock a drive; prompts for the password.\n"
+        "                             --admin (default): the admin password, or the only\n"
+        "                               password on single-password drives\n"
+        "                             --user: the user password on drives with admin and\n"
+        "                               user passwords\n"
         "                             --trace logs every HID exchange (secrets redacted)\n"
         "  hid-mode                   Switch a locked drive to HID mode\n"
         "  handshake                  Diagnostic: key exchange only, sends no password\n"
@@ -266,6 +274,7 @@ int main(int argc, char** argv)
     std::string port;
     bool password_stdin = false;
     bool trace = false;
+    Account account = Account::Admin;
     bool with_session = true;
     for (int i = 2; i < argc; ++i) {
         std::string_view arg = argv[i];
@@ -275,6 +284,10 @@ int main(int argc, char** argv)
             password_stdin = true;
         } else if (arg == "--trace" && cmd == "unlock") {
             trace = true;
+        } else if (arg == "--user" && cmd == "unlock") {
+            account = Account::User;
+        } else if (arg == "--admin" && cmd == "unlock") {
+            account = Account::Admin;
         } else if (arg == "--no-session" && cmd == "dump") {
             with_session = false;
         } else {
@@ -287,7 +300,7 @@ int main(int argc, char** argv)
         if (cmd == "list")
             return cmd_list();
         if (cmd == "unlock")
-            return cmd_unlock(port, password_stdin, trace);
+            return cmd_unlock(port, account, password_stdin, trace);
         if (cmd == "dump")
             return cmd_dump(port, with_session);
         if (cmd == "hid-mode")

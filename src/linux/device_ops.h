@@ -10,6 +10,7 @@
 
 #include "linux/usb_topology.h"
 #include "proto/bytes.h"
+#include "proto/session.h"
 
 namespace ironkey {
 
@@ -52,15 +53,20 @@ void ensure_hid_mode(UsbDevice& dev, const Log& log);
 // Unlocks a device in HID mode and waits for its data disk to appear.
 // Refreshes `dev`. Throws NotUnlockedError if no data disk appears.
 // With `trace`, every HID exchange is written to `log` (secrets redacted).
-void unlock_device(UsbDevice& dev, std::string_view password, const Log& log,
+void unlock_device(UsbDevice& dev, std::string_view password, Account account, const Log& log,
                    bool trace = false);
 
-// Reads the drive's consecutive failed-login count (GetAreaParams), which
-// needs HID mode but no session or password. nullopt if it cannot be read.
-std::optional<int> read_failed_attempts(const UsbDevice& dev);
+// Reads the drive's consecutive failed-login count for `account`
+// (GetAreaParams), which needs HID mode but no session or password.
+// nullopt if it cannot be read, or its location is not known (user account).
+std::optional<int> read_failed_attempts(const UsbDevice& dev, Account account);
 
-// "2 failed attempts; the drive erases itself after 10 by default", or "" for 0.
-std::string failed_attempts_warning(int failed);
+// What happens after too many failures on `account`.
+std::string lockout_consequence(Account account);
+
+// E.g. "2 failed admin logins since the last successful one; 8 left before the
+// drive erases itself", or "" for 0.
+std::string failed_attempts_warning(int failed, Account account);
 
 // Polls until the device shows an unlocked data disk.
 bool wait_for_unlocked(UsbDevice& dev, std::chrono::seconds timeout);

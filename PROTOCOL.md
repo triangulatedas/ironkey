@@ -334,7 +334,12 @@ FF A4's CDB[4] selects the account. With admin and user passwords both set:
 - **Index 0 is the Admin account.** The admin password unlocks with index 0.
   The user password with index 0 is rejected and counted as a failed login
   in 0x0C.
-- Index 1 is presumably the User account; not yet tested.
+- **Index 1 is the User account.** The user password unlocks with index 1
+  (CDB `00 01 00 06`).
+- GetAreaParams looks the same in an admin and a user session (apart from the
+  changing 0x21–0x23 value), so it does not show which account logged in.
+- Kingston's manual says each account has its own failed-login counter. Only
+  the admin counter (0x0C) has been located; the user counter has not.
 
 The original single-password set-up (as used by the Python tool) also logs
 in with index 0.

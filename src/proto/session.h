@@ -26,6 +26,18 @@ public:
 
 constexpr size_t kMaxPasswordBytes = 16;
 
+// Which password to log in with: FF A4 CDB[4] (userIDIndex).
+enum class Account : uint8_t {
+    // The admin password on drives with admin and user passwords, or the only
+    // password on single-password drives. Ten failures crypto-erase the drive.
+    Admin = 0,
+    // The user password on drives with admin and user passwords. Ten failures
+    // lock user login; the admin can reset it.
+    User = 1,
+};
+
+const char* to_string(Account account);
+
 // The out-of-box limit of consecutive failed logins per account (MaxNoA)
 // according to Kingston's manual. Reaching it on the admin account
 // crypto-erases the drive.
@@ -34,9 +46,9 @@ constexpr int kDefaultMaxFailedAttempts = 10;
 // Decoded GetAreaParams (FF A0). Works without a session or password.
 // See PROTOCOL.md, "Status queries".
 struct AreaParams {
-    uint32_t data_sectors = 0;   // [0x00] size of the encrypted data area
-    bool unlocked = false;       // [0x08]
-    uint8_t failed_attempts = 0; // [0x0C] consecutive failed logins, reset on success
+    uint32_t data_sectors = 0;         // [0x00] size of the encrypted data area
+    bool unlocked = false;             // [0x08]
+    uint8_t admin_failed_attempts = 0; // [0x0C] consecutive failed admin (index 0) logins
     Bytes raw;
 };
 
@@ -58,9 +70,10 @@ Key128 rsa_handshake(Channel& ch, Random& rng, const RsaKey& host_key);
 
 // PVC open, password and commit (FF 8B, 8F, A4, 89).
 // Throws WrongPasswordError if the device rejects the password.
-void send_unlock(Channel& ch, const Key128& shared, std::string_view password, Random& rng);
+void send_unlock(Channel& ch, const Key128& shared, std::string_view password, Random& rng,
+                 Account account = Account::Admin);
 
 // Complete unlock of a device already in HID mode.
-void unlock(HidDevice& dev, std::string_view password);
+void unlock(HidDevice& dev, std::string_view password, Account account = Account::Admin);
 
 }  // namespace ironkey

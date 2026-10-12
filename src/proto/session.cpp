@@ -101,10 +101,17 @@ Key128 rsa_handshake(Channel& ch, Random& rng, const RsaKey& host)
     return shared;
 }
 
-void send_unlock(Channel& ch, const Key128& shared, std::string_view password, Random& rng)
+const char* to_string(Account account)
+{
+    return account == Account::User ? "user" : "admin";
+}
+
+void send_unlock(Channel& ch, const Key128& shared, std::string_view password, Random& rng,
+                 Account account)
 {
     if (password.size() > kMaxPasswordBytes)
-        throw UnlockError("Password too long (max 16 bytes)");
+        throw UnlockError("Password longer than 16 bytes. Passphrase mode (10-64 characters) "
+                          "is not supported yet");
 
     Bytes random32 = rng.bytes(32);
     Bytes pvc_payload = encrypt_pvc_key(kPvc0Key, shared, random32);
@@ -115,12 +122,14 @@ void send_unlock(Channel& ch, const Key128& shared, std::string_view password, R
     // FF 8F: PVCFuncOpen
     ch.command(0x8F, 0x00, Direction::Write, pvc_payload, 0, {0x02});
 
-    // FF A4: NTU_Open with the zero-padded, encrypted password
+    // FF A4: NTU_Open with the zero-padded, encrypted password.
+    // CDB: secureType=0, userIDIndex, timeInterval=0, autoLogout=6.
     std::array<uint8_t, 16> plaintext{};
     std::copy(password.begin(), password.end(), plaintext.begin());
     Key128 encrypted_pw = aes128_ecb_encrypt(shared, plaintext);
     secure_wipe(plaintext.data(), plaintext.size());
-    ch.command(0xA4, 0x00, Direction::Write, encrypted_pw, 16, {0x00, 0x00, 0x00, 0x06});
+    ch.command(0xA4, 0x00, Direction::Write, encrypted_pw, 16,
+               {0x00, static_cast<uint8_t>(account), 0x00, 0x06});
     // Status stays 0 for a wrong password; byte 6 of the report is set instead.
     bool rejected = ch.last_status.size() > 6 && ch.last_status[6] != 0;
 
@@ -140,17 +149,17 @@ AreaParams read_area_params(Channel& ch)
         throw IronKeyError("Short GetAreaParams reply");
     p.data_sectors = p.raw[0] | p.raw[1] << 8 | p.raw[2] << 16 | uint32_t(p.raw[3]) << 24;
     p.unlocked = p.raw[0x08] != 0;
-    p.failed_attempts = p.raw[0x0C];
+    p.admin_failed_attempts = p.raw[0x0C];
     return p;
 }
 
-void unlock(HidDevice& dev, std::string_view password)
+void unlock(HidDevice& dev, std::string_view password, Account account)
 {
     Channel ch(dev);
     SystemRandom rng;
     RsaKey host = RsaKey::generate512();
     Key128 shared = rsa_handshake(ch, rng, host);
-    send_unlock(ch, shared, password, rng);
+    send_unlock(ch, shared, password, rng, account);
     secure_wipe(shared.data(), shared.size());
 }
 

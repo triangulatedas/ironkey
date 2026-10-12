@@ -9,6 +9,7 @@
 
 #include "agent/password_dialog.h"
 #include "linux/udev_monitor.h"
+#include "proto/session.h"
 
 namespace ironkey {
 
@@ -21,7 +22,10 @@ public:
     // every unlock failed, to exercise the retry dialog.
     enum class DryRun { Off, Succeed, Fail };
 
-    explicit Agent(DryRun dry_run = DryRun::Off) : dry_run_(dry_run) {}
+    explicit Agent(DryRun dry_run = DryRun::Off, Account account = Account::Admin)
+        : dry_run_(dry_run), account_(account)
+    {
+    }
     ~Agent();
 
     // Starts workers for locked IronKeys that are already connected.
@@ -51,9 +55,10 @@ private:
 
     void start(const std::string& port);
     void stop(const std::string& port);
-    static void run(Worker& w, const std::string& port, DryRun dry_run);
+    static void run(Worker& w, const std::string& port, DryRun dry_run, Account account);
 
     DryRun dry_run_;
+    Account account_;
     std::map<std::string, std::unique_ptr<Worker>> workers_;
 };
 

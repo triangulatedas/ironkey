@@ -3,6 +3,7 @@
 
 #include <unistd.h>
 
+#include <algorithm>
 #include <thread>
 
 #include "linux/hidraw_device.h"
@@ -49,22 +50,26 @@ void ensure_hid_mode(UsbDevice& dev, const Log& log)
     log("HID mode: " + dev.hidraw.front());
 }
 
-void unlock_device(UsbDevice& dev, std::string_view password, const Log& log, bool trace)
+void unlock_device(UsbDevice& dev, std::string_view password, Account account, const Log& log,
+                   bool trace)
 {
     if (password.size() > kMaxPasswordBytes)
-        throw UnlockError("Password too long (max 16 bytes)");
+        throw UnlockError("Password longer than 16 bytes. Passphrase mode (10-64 characters) "
+                          "is not supported yet");
     if (!dev.in_hid_mode())
         throw IronKeyError("Device is not in HID mode");
 
     try {
         HidrawDevice hid(dev.hidraw.front());
         TracingHidDevice traced(hid, log);
-        unlock(trace ? static_cast<HidDevice&>(traced) : hid, password);
+        unlock(trace ? static_cast<HidDevice&>(traced) : hid, password, account);
     } catch (const WrongPasswordError&) {
-        auto failed = read_failed_attempts(dev);
-        std::string msg = "Wrong password";
+        auto failed = read_failed_attempts(dev, account);
+        std::string msg = std::string("Wrong ") + to_string(account) + " password";
         if (failed)
-            msg += " (" + failed_attempts_warning(*failed) + ")";
+            msg += " (" + failed_attempts_warning(*failed, account) + ")";
+        else
+            msg += ". " + lockout_consequence(account);
         throw NotUnlockedError(msg, true, failed);
     }
 
@@ -80,27 +85,40 @@ void unlock_device(UsbDevice& dev, std::string_view password, const Log& log, bo
     }
 }
 
-std::optional<int> read_failed_attempts(const UsbDevice& dev)
+std::optional<int> read_failed_attempts(const UsbDevice& dev, Account account)
 {
-    if (!dev.in_hid_mode())
+    // Only the admin counter's location is known so far (PROTOCOL.md).
+    if (account != Account::Admin || !dev.in_hid_mode())
         return std::nullopt;
     try {
         HidrawDevice hid(dev.hidraw.front());
         Channel ch(hid);
         ch.drain();
-        return read_area_params(ch).failed_attempts;
+        return read_area_params(ch).admin_failed_attempts;
     } catch (const std::exception&) {
         return std::nullopt;
     }
 }
 
-std::string failed_attempts_warning(int failed)
+std::string lockout_consequence(Account account)
+{
+    std::string n = std::to_string(kDefaultMaxFailedAttempts);
+    if (account == Account::User)
+        return "User login locks after " + n +
+               " failed attempts in a row; the admin can reset it";
+    return "The drive erases itself after " + n + " failed attempts in a row";
+}
+
+std::string failed_attempts_warning(int failed, Account account)
 {
     if (failed <= 0)
         return {};
-    return std::to_string(failed) + (failed == 1 ? " failed attempt" : " failed attempts") +
-           " since the last successful login; the drive erases itself after " +
-           std::to_string(kDefaultMaxFailedAttempts) + " by default";
+    int left = std::max(kDefaultMaxFailedAttempts - failed, 0);
+    return std::to_string(failed) + " failed " + to_string(account) +
+           (failed == 1 ? " login" : " logins") + " since the last successful one; " +
+           std::to_string(left) + " left before " +
+           (account == Account::User ? "user login locks" : "the drive erases itself") +
+           " (default limit " + std::to_string(kDefaultMaxFailedAttempts) + ")";
 }
 
 bool wait_for_unlocked(UsbDevice& dev, std::chrono::seconds timeout)

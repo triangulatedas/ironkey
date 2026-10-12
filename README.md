@@ -181,6 +181,9 @@ is mounted by the desktop as usual and a notification shows which disk it is.
 - Unplugging the drive closes its dialog.
 - After a failed attempt the dialog comes back with the failure count and a
   warning. Passwords are never retried automatically.
+- `ironkey-agent --user` logs in with the user password on drives set up with
+  admin and user passwords. The default is the admin password, or the only
+  password on single-password drives.
 - `ironkey-agent --dry-run` detects drives and shows the dialog, but never
   sends anything to a drive. Use it for testing.
 
@@ -191,6 +194,7 @@ Logs: `journalctl --user -u ironkey-agent`.
 ```bash
 ironkey-unlock list                        # connected Kingston devices, state, nodes and access
 ironkey-unlock unlock [--device PORT]      # prompt for the password and unlock
+ironkey-unlock unlock --user               # log in with the user password (admin+user drives)
 ironkey-unlock unlock --password-stdin     # read the password from stdin (scripts)
 ironkey-unlock hid-mode  [--device PORT]   # switch a locked drive to HID mode
 ironkey-unlock handshake [--device PORT]   # diagnostic: key exchange only, no password sent
@@ -219,8 +223,10 @@ Tested with a Locker+50G2 (64 GB): locked PID `0951:159d`, HID mode PID
 The drive reports wrong passwords and keeps a failed-login counter that can
 be read without logging in; both tools show it (see
 [PROTOCOL.md](PROTOCOL.md#status-queries-ff-21-ff-a0)). With separate admin and
-user passwords set, the tools currently log in to the **admin** account
-(index 0); user login (index 1) is not supported yet.
+user passwords set, `--admin` (default, index 0) and `--user` (index 1) both
+unlock on hardware. The default is admin because the tools can't yet tell a
+single-password drive (where index 0 is the only password) from an admin+user
+one.
 The drive keeps its USB port path and serial across the switch. Other
 capacities (16G2, 32G2, …) use other PIDs. Devices are recognised by vendor ID
 and product name, so they are expected to work, but have not been tested.
