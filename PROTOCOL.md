@@ -446,3 +446,27 @@ layouts. These are built through Objective-C `SCSITask`/IOKit dispatch on
 macOS; the Windows binary builds the CDBs directly and is the better source
 for the exact bytes. Testing is safe to iterate on an already-blank drive
 (initialize), but each attempt re-keys, so treat it as destructive.
+
+### Reset / initialize sequence (captured)
+
+Confirmed by a USB capture of the vendor app performing "Reset Device" with a
+new password (Bulk-Only Transport; each vendor command is a CBW carrying the
+`FF xx` CDB, an optional data phase, then a CSW). The crypto pieces (RSA
+handshake, `encryptPVCKey` for `FF 8F`, AES-ECB password for `FF A4`) are the
+same ones the unlock path already implements. New commands:
+
+| CDB | Meaning |
+|---|---|
+| `FF A2 00 00 00 00 41 A2` + 20B | ConfigPrivateArea: payload = area size in sectors (4B LE) + 16B token. Defines/re-keys the encrypted area (the crypto-erase). |
+| `FF A4 … 06` + 16B | Set password (same framing as the unlock *verify*; sets because the area was just (re)configured). 16B = AES-ECB(sessionKey, password padded). |
+| `FF 89` | Commit (follows A2, and follows A4). |
+| `FF A5` | Enter password-provisioning state (sent before the set-password session). |
+| `FF 07 01 <lba 4B> <len>` | Prepare/erase a data region (no data phase); used before writing the fresh filesystem. |
+| `FF 62 / FF 63 <idx> <name…>` + 512B | Write an encrypted profile field (hint / contact). The **account name travels in the CDB in cleartext**; the 512B payload is encrypted. |
+| `FF 26 00 00 53` + 3B (`00 02 00`) | Set a mode flag during provisioning. |
+| WRITE10 (`2A`) | Standard SCSI writes that lay down the new partition table + FAT (the `buildFAT*` output). |
+
+Overall flow: configure/erase area (`handshake → 8B(type3) → 8F 02 → A2 → 89`)
+→ provisioning (`A5`, profile writes `62/63`, `26`) → set password
+(`handshake → 8B(type3) → 8F 02 → A4 → 89`) → write the FAT filesystem
+(`FF 07` region prep + `WRITE10`). Reset and initialize are the same flow.
