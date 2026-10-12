@@ -447,6 +447,25 @@ macOS; the Windows binary builds the CDBs directly and is the better source
 for the exact bytes. Testing is safe to iterate on an already-blank drive
 (initialize), but each attempt re-keys, so treat it as destructive.
 
+### Change password (captured, implemented)
+
+Captured from the vendor "change password" and "change user password" flows.
+Unlike reset, it does **not** re-key the area (no `FF A2`), so it is fully
+implemented. Sequence:
+
+```
+handshake (FF 80..88) -> FF 8B 00 00 03 -> FF 8F 02 (PVC) -> FF A6/A8 (32B) -> FF 89
+```
+
+| CDB | Meaning |
+|---|---|
+| `FF A6` + 32B | Change admin password: `AES-ECB(sessionKey, oldPw) \|\| AES-ECB(sessionKey, newPw)` (each zero-padded to 16B, same as the unlock password block). |
+| `FF A8` + 32B | Change the user password (admin sets it), same payload shape. |
+
+The device verifies the first block against the current password and rejects
+the command with a non-zero status (no change) if it is wrong. A following
+session writes the password hint via `FF 62` (optional; not reproduced).
+
 ### Reset / initialize sequence (captured)
 
 Confirmed by a USB capture of the vendor app performing "Reset Device" with a

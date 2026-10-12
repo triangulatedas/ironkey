@@ -33,6 +33,7 @@ public:
     // location in GetAreaParams (0x0C) is known.
     uint8_t failed_attempts[2] = {0, 0};
     uint8_t last_account = 0xFF;
+    int changed_account = -1;
 
     void write_output(ByteView report) override
     {
@@ -171,6 +172,23 @@ private:
             }
             return 0;
         }
+        case 0xA6:  // change admin password
+        case 0xA8:  // change user password
+        {
+            int acct = sub_ == 0xA8 ? 1 : 0;
+            auto enc = [&](const std::string& s) {
+                std::array<uint8_t, 16> b{};
+                std::memcpy(b.data(), s.data(), s.size());
+                return aes128_ecb_encrypt(shared_, b);
+            };
+            auto enc_old = enc(passwords_[acct]);
+            if (!std::equal(enc_old.begin(), enc_old.end(), data.begin()))
+                return 0x0030;  // wrong current password -> non-zero status
+            // Decrypt-less: the test can't recover the new plaintext, so just
+            // record that a change for the right account was accepted.
+            changed_account = acct;
+            return 0;
+        }
         case 0x89:
             unlocked = host_proved_key && pvc_open && password_ok;
             if (unlocked)
@@ -280,6 +298,32 @@ TEST(single_password_drive_has_no_user_account)
     CHECK_THROWS_AS(run_unlock(dev, "only-pw", Account::User), WrongPasswordError);
     run_unlock(dev, "only-pw", Account::Admin);
     CHECK(dev.unlocked);
+}
+
+TEST(change_password_rejects_wrong_old_and_accepts_right_old)
+{
+    auto run_change = [](SimulatedIronKey& dev, std::string_view oldp, std::string_view newp,
+                         Account acct) {
+        Channel ch(dev);
+        ch.read_delay = std::chrono::milliseconds(0);
+        SystemRandom rng;
+        RsaKey host = RsaKey::generate512();
+        Key128 shared = rsa_handshake(ch, rng, host);
+        send_change_password(ch, shared, oldp, newp, rng, acct);
+    };
+
+    SimulatedIronKey dev("admin-pw", "user-pw");
+    // Wrong current admin password: rejected, nothing recorded.
+    CHECK_THROWS_AS(run_change(dev, "nope", "new-pw", Account::Admin), WrongPasswordError);
+    CHECK_EQ(dev.changed_account, -1);
+
+    // Correct current admin password: accepted via FF A6.
+    run_change(dev, "admin-pw", "new-admin", Account::Admin);
+    CHECK_EQ(dev.changed_account, 0);
+
+    // User password change goes through FF A8 against the user account.
+    run_change(dev, "user-pw", "new-user", Account::User);
+    CHECK_EQ(dev.changed_account, 1);
 }
 
 // Replies captured from a real Locker+50G2 (see PROTOCOL.md, "Status queries").

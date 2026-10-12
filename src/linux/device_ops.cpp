@@ -85,6 +85,23 @@ void unlock_device(UsbDevice& dev, std::string_view password, const Login& login
     }
 }
 
+void change_password_device(UsbDevice& dev, std::string_view old_password,
+                            std::string_view new_password, const Login& login, const Log& log,
+                            bool trace)
+{
+    if (new_password.empty() || new_password.size() > kMaxPasswordBytes)
+        throw UnlockError("New password must be 1 to 16 bytes. Passphrase mode (10-64 "
+                          "characters) is not supported yet");
+    if (!dev.in_hid_mode())
+        throw IronKeyError("Device is not in HID mode");
+
+    HidrawDevice hid(dev.hidraw.front());
+    TracingHidDevice traced(hid, log);
+    change_password(trace ? static_cast<HidDevice&>(traced) : hid, old_password, new_password,
+                    login.account);
+    log("Password changed.");
+}
+
 DriveStatus read_drive_status(const UsbDevice& dev)
 {
     DriveStatus status;

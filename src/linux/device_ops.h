@@ -100,6 +100,13 @@ extern const char* const kUntrustedHostWarning;
 void unlock_device(UsbDevice& dev, std::string_view password, const Login& login,
                    const Log& log, bool trace = false);
 
+// Changes a password in place (the drive must be in HID mode). The device
+// rejects a wrong old password with no change (WrongPasswordError). Does not
+// unlock the drive. `login.account` picks admin (FF A6) or user (FF A8).
+void change_password_device(UsbDevice& dev, std::string_view old_password,
+                            std::string_view new_password, const Login& login, const Log& log,
+                            bool trace = false);
+
 // Locks an unlocked drive by unmounting it and powering it off, then waits
 // for it to leave the bus. Returns false if it was not unlocked.
 bool lock_device(UsbDevice& dev, const Log& log);

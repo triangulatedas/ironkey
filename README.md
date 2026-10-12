@@ -198,6 +198,7 @@ ironkey-unlock list                        # connected Kingston devices, state, 
 ironkey-unlock unlock [--device PORT]      # prompt for the password and unlock
 ironkey-unlock unlock --user               # log in with the user password (admin+user drives)
 ironkey-unlock unlock --password-stdin     # read the password from stdin (scripts)
+ironkey-unlock change-password             # change a password in place (admin or --user)
 ironkey-unlock lock [--device PORT]        # unmount and power off, which locks the drive
 ironkey-unlock hid-mode  [--device PORT]   # switch a locked drive to HID mode
 ironkey-unlock handshake [--device PORT]   # diagnostic: key exchange only, no password sent

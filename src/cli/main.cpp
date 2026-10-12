@@ -259,6 +259,45 @@ int cmd_unlock(const std::string& port, std::optional<Account> requested, bool p
     return 0;
 }
 
+int cmd_change_password(const std::string& port, std::optional<Account> requested, bool trace)
+{
+    UsbDevice dev;
+    if (!select_device(port, dev))
+        return 1;
+    check_access(dev);
+    ensure_hid_mode(dev, print_log);
+    Login login = choose_login(read_drive_status(dev), requested);
+
+    std::fprintf(stderr, "%s\n\n", kUntrustedHostWarning);
+
+    Password old_pw, new_pw, confirm;
+    std::string name = login.password_name();
+    if (!read_password_tty("Current " + name + ": ", old_pw) || old_pw.value.empty()) {
+        std::fprintf(stderr, "No password given.\n");
+        return 1;
+    }
+    read_password_tty("New " + name + ": ", new_pw);
+    read_password_tty("Confirm new " + name + ": ", confirm);
+    if (new_pw.value != confirm.value) {
+        std::fprintf(stderr, "New passwords do not match; nothing was changed.\n");
+        return 1;
+    }
+    if (new_pw.value.empty() || new_pw.value.size() > kMaxPasswordBytes) {
+        std::fprintf(stderr, "New password must be 1 to 16 bytes (passphrase mode is not "
+                             "supported yet); nothing was changed.\n");
+        return 1;
+    }
+
+    try {
+        change_password_device(dev, old_pw.value, new_pw.value, login, print_log, trace);
+    } catch (const WrongPasswordError& e) {
+        std::fprintf(stderr, "%s.\n", e.what());
+        return 3;
+    }
+    std::printf("Changed the %s on %s.\n", name.c_str(), describe(dev).c_str());
+    return 0;
+}
+
 int cmd_lock(const std::string& port)
 {
     // Only drives that are unlocked are candidates, so "the only IronKey"
@@ -299,6 +338,9 @@ void usage()
         "                             the user password unless --admin is given. Drives\n"
         "                             with a single password need neither option.\n"
         "                             --trace logs every HID exchange (secrets redacted)\n"
+        "  change-password [--admin|--user]\n"
+        "                             Change a password in place (prompts for current and\n"
+        "                             new). Does not unlock the drive.\n"
         "  lock                       Unmount and power off an unlocked drive, which\n"
         "                             locks it (same as Eject in a file manager)\n"
         "  hid-mode                   Switch a locked drive to HID mode\n"
@@ -328,9 +370,11 @@ int main(int argc, char** argv)
             password_stdin = true;
         } else if (arg == "--trace" && cmd == "unlock") {
             trace = true;
-        } else if (arg == "--user" && cmd == "unlock") {
+        } else if (arg == "--trace" && cmd == "change-password") {
+            trace = true;
+        } else if (arg == "--user" && (cmd == "unlock" || cmd == "change-password")) {
             account = Account::User;
-        } else if (arg == "--admin" && cmd == "unlock") {
+        } else if (arg == "--admin" && (cmd == "unlock" || cmd == "change-password")) {
             account = Account::Admin;
         } else if (arg == "--no-session" && cmd == "dump") {
             with_session = false;
@@ -347,6 +391,8 @@ int main(int argc, char** argv)
             return cmd_unlock(port, account, password_stdin, trace);
         if (cmd == "dump")
             return cmd_dump(port, with_session);
+        if (cmd == "change-password")
+            return cmd_change_password(port, account, trace);
         if (cmd == "lock")
             return cmd_lock(port);
         if (cmd == "hid-mode")

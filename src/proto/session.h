@@ -77,7 +77,19 @@ Key128 rsa_handshake(Channel& ch, Random& rng, const RsaKey& host_key);
 void send_unlock(Channel& ch, const Key128& shared, std::string_view password, Random& rng,
                  Account account = Account::Admin);
 
+// Change a password in place (FF 8B, 8F, A6/A8, 89), as captured from the
+// vendor app. Sends enc(old)||enc(new); the device rejects a wrong old
+// password with no change. Account::Admin uses FF A6, Account::User FF A8.
+// Throws WrongPasswordError if the current password is wrong.
+void send_change_password(Channel& ch, const Key128& shared, std::string_view old_password,
+                          std::string_view new_password, Random& rng,
+                          Account account = Account::Admin);
+
 // Complete unlock of a device already in HID mode.
 void unlock(HidDevice& dev, std::string_view password, Account account = Account::Admin);
+
+// Complete password change on a device already in HID mode.
+void change_password(HidDevice& dev, std::string_view old_password, std::string_view new_password,
+                     Account account = Account::Admin);
 
 }  // namespace ironkey

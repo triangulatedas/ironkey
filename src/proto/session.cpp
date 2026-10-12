@@ -141,6 +141,51 @@ void send_unlock(Channel& ch, const Key128& shared, std::string_view password, R
         throw WrongPasswordError("Wrong password");
 }
 
+namespace {
+
+Key128 encrypt_password(const Key128& shared, std::string_view password)
+{
+    if (password.size() > kMaxPasswordBytes)
+        throw UnlockError("Password longer than 16 bytes. Passphrase mode (10-64 characters) "
+                          "is not supported yet");
+    std::array<uint8_t, 16> plaintext{};
+    std::copy(password.begin(), password.end(), plaintext.begin());
+    Key128 enc = aes128_ecb_encrypt(shared, plaintext);
+    secure_wipe(plaintext.data(), plaintext.size());
+    return enc;
+}
+
+}  // namespace
+
+void send_change_password(Channel& ch, const Key128& shared, std::string_view old_password,
+                          std::string_view new_password, Random& rng, Account account)
+{
+    Bytes random32 = rng.bytes(32);
+    Bytes pvc_payload = encrypt_pvc_key(kPvc0Key, shared, random32);
+
+    // Same secure-access + PVC open as unlock (observed in the capture).
+    ch.command(0x8B, 0x00, Direction::None, {}, 0, {0x00, 0x03});
+    ch.command(0x8F, 0x00, Direction::Write, pvc_payload, 0, {0x02});
+
+    // FF A6 (admin) / FF A8 (user): 32 bytes = enc(old) || enc(new).
+    // The device verifies the old block against the current password and
+    // rejects (non-zero status) if it is wrong, so nothing changes.
+    Key128 enc_old = encrypt_password(shared, old_password);
+    Key128 enc_new = encrypt_password(shared, new_password);
+    Bytes payload(enc_old.begin(), enc_old.end());
+    payload.insert(payload.end(), enc_new.begin(), enc_new.end());
+
+    uint8_t sub = account == Account::User ? 0xA8 : 0xA6;
+    try {
+        ch.command(sub, 0x00, Direction::Write, payload, 32);
+    } catch (const DeviceStatusError&) {
+        throw WrongPasswordError("The current password is wrong; nothing was changed");
+    }
+    secure_wipe(payload.data(), payload.size());
+
+    ch.command(0x89, 0x00, Direction::None);
+}
+
 AreaParams read_area_params(Channel& ch)
 {
     AreaParams p;
@@ -161,6 +206,17 @@ void unlock(HidDevice& dev, std::string_view password, Account account)
     RsaKey host = RsaKey::generate512();
     Key128 shared = rsa_handshake(ch, rng, host);
     send_unlock(ch, shared, password, rng, account);
+    secure_wipe(shared.data(), shared.size());
+}
+
+void change_password(HidDevice& dev, std::string_view old_password, std::string_view new_password,
+                     Account account)
+{
+    Channel ch(dev);
+    SystemRandom rng;
+    RsaKey host = RsaKey::generate512();
+    Key128 shared = rsa_handshake(ch, rng, host);
+    send_change_password(ch, shared, old_password, new_password, rng, account);
     secure_wipe(shared.data(), shared.size());
 }
 
