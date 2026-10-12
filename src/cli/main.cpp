@@ -362,7 +362,8 @@ int cmd_format_replay(const std::string& port)
     check_access(dev);
     ensure_hid_mode(dev, print_log);
     HidrawDevice hid(dev.hidraw.front());
-    write_protected_pages(hid, pages);
+    Channel ch(hid);
+    write_protected_pages(ch, pages);
     std::puts("Protected pages written. Re-reading area size.");
 
     refresh(dev);

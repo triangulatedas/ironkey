@@ -100,15 +100,15 @@ void send_change_password(Channel& ch, const Key128& shared, std::string_view ol
                           Account account = Account::Admin);
 
 // Complete unlock of a device already in HID mode.
-void unlock(HidDevice& dev, std::string_view password, Account account = Account::Admin);
+void unlock(Channel& ch, std::string_view password, Account account = Account::Admin);
 
 // Complete password change on a device already in HID mode.
-void change_password(HidDevice& dev, std::string_view old_password, std::string_view new_password,
+void change_password(Channel& ch, std::string_view old_password, std::string_view new_password,
                      Account account = Account::Admin);
 
 // Set a password with no prior password (FF A5, then 8B/8F/A4/89), as used
 // after a re-key during reset/initialize. The drive must be in HID mode.
-void set_password(HidDevice& dev, std::string_view new_password, Account account = Account::Admin);
+void set_password(Channel& ch, std::string_view new_password, Account account = Account::Admin);
 
 // Owner / contact info the vendor stores in the drive's protected hidden area
 // (the "IKVP" page). It is AES-ECB-encrypted under a fixed key and reachable
@@ -131,18 +131,18 @@ struct Profile {
 
 // Reads the owner profile (PVC0 session, FF 63 page 0x0D, decrypt). Returns an
 // empty Profile if the page has no IKVP header. No password needed; HID mode.
-Profile read_profile(HidDevice& dev);
+Profile read_profile(Channel& ch);
 
 // Writes the owner profile (PVC0 session, FF 62 pages 0x0D/0x0E). Overwrites
 // all fields. No password needed; HID mode.
-void write_profile(HidDevice& dev, const Profile& profile);
+void write_profile(Channel& ch, const Profile& profile);
 
 // Replays FF 62 "write protected page" commands (the vendor Format step that
 // activates the data partition after a reset). Each entry is (page_index,
 // 512-byte payload); the payloads are session-independent, so captured bytes
 // replay verbatim. Pages are written two per secure session with a FF 26 mode
 // flag, mirroring the capture. The drive must be in HID mode.
-void write_protected_pages(HidDevice& dev,
+void write_protected_pages(Channel& ch,
                            const std::vector<std::pair<uint8_t, Bytes>>& pages);
 
 // Full factory reset / initialize (the vendor "Reset Device" flow): mode flag,
@@ -151,6 +151,6 @@ void write_protected_pages(HidDevice& dev,
 // password encrypted under the session key, CDB[6]=0x41 to re-key), finally a
 // login to verify. The drive must be in HID mode; no old password is needed.
 // Afterwards create a filesystem on the (blank) data partition with mkfs.
-void reset_device(HidDevice& dev, std::string_view new_password, Account account = Account::Admin);
+void reset_device(Channel& ch, std::string_view new_password, Account account = Account::Admin);
 
 }  // namespace ironkey

@@ -61,7 +61,8 @@ void unlock_device(UsbDevice& dev, std::string_view password, const Login& login
     try {
         HidrawDevice hid(dev.hidraw.front());
         TracingHidDevice traced(hid, log);
-        unlock(trace ? static_cast<HidDevice&>(traced) : hid, password, login.account);
+        Channel ch(trace ? static_cast<HidDevice&>(traced) : hid);
+        unlock(ch, password, login.account);
     } catch (const WrongPasswordError&) {
         auto failed = login.failed_attempts(read_drive_status(dev));
         std::string msg = "Wrong " + login.password_name();
@@ -91,7 +92,8 @@ void set_password_device(UsbDevice& dev, std::string_view new_password, const Lo
         throw IronKeyError("Device is not in HID mode");
     HidrawDevice hid(dev.hidraw.front());
     TracingHidDevice traced(hid, log);
-    set_password(trace ? static_cast<HidDevice&>(traced) : hid, new_password, login.account);
+    Channel ch(trace ? static_cast<HidDevice&>(traced) : hid);
+    set_password(ch, new_password, login.account);
     log("Password set.");
 }
 
@@ -102,12 +104,12 @@ void reset_device_full(UsbDevice& dev, std::string_view new_password, const Prof
         throw IronKeyError("Device is not in HID mode");
     HidrawDevice hid(dev.hidraw.front());
     TracingHidDevice traced(hid, log);
-    HidDevice& io = trace ? static_cast<HidDevice&>(traced) : hid;
+    Channel ch(trace ? static_cast<HidDevice&>(traced) : hid);
     // Reset always sets the single/admin password (index 0).
-    reset_device(io, new_password, Account::Admin);
+    reset_device(ch, new_password, Account::Admin);
     log("Reset complete: area wiped and new password set.");
     if (!profile.empty()) {
-        write_profile(io, profile);
+        write_profile(ch, profile);
         log("Owner info written.");
     }
 }
@@ -118,7 +120,8 @@ Profile read_profile_device(UsbDevice& dev, const Log& log, bool trace)
         throw IronKeyError("Device is not in HID mode");
     HidrawDevice hid(dev.hidraw.front());
     TracingHidDevice traced(hid, log);
-    return read_profile(trace ? static_cast<HidDevice&>(traced) : hid);
+    Channel ch(trace ? static_cast<HidDevice&>(traced) : hid);
+    return read_profile(ch);
 }
 
 uint16_t rekey_area_probe(UsbDevice& dev, const Log& log, bool commit, bool trace)
@@ -164,8 +167,8 @@ void change_password_device(UsbDevice& dev, std::string_view old_password,
 
     HidrawDevice hid(dev.hidraw.front());
     TracingHidDevice traced(hid, log);
-    change_password(trace ? static_cast<HidDevice&>(traced) : hid, old_password, new_password,
-                    login.account);
+    Channel ch(trace ? static_cast<HidDevice&>(traced) : hid);
+    change_password(ch, old_password, new_password, login.account);
     log("Password changed.");
 }
 

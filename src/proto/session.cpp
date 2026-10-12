@@ -247,9 +247,8 @@ AreaParams read_area_params(Channel& ch)
     return p;
 }
 
-void unlock(HidDevice& dev, std::string_view password, Account account)
+void unlock(Channel& ch, std::string_view password, Account account)
 {
-    Channel ch(dev);
     SystemRandom rng;
     RsaKey host = RsaKey::generate512();
     Key128 shared = rsa_handshake(ch, rng, host);
@@ -257,10 +256,9 @@ void unlock(HidDevice& dev, std::string_view password, Account account)
     secure_wipe(shared.data(), shared.size());
 }
 
-void change_password(HidDevice& dev, std::string_view old_password, std::string_view new_password,
+void change_password(Channel& ch, std::string_view old_password, std::string_view new_password,
                      Account account)
 {
-    Channel ch(dev);
     SystemRandom rng;
     RsaKey host = RsaKey::generate512();
     Key128 shared = rsa_handshake(ch, rng, host);
@@ -268,11 +266,10 @@ void change_password(HidDevice& dev, std::string_view old_password, std::string_
     secure_wipe(shared.data(), shared.size());
 }
 
-void reset_device(HidDevice& dev, std::string_view new_password, Account account)
+void reset_device(Channel& ch, std::string_view new_password, Account account)
 {
     if (new_password.empty() || new_password.size() > kMaxPassphraseBytes)
         throw UnlockError("New password must be 1 to 64 characters");
-    Channel ch(dev);
     SystemRandom rng;
 
     uint32_t sectors = 0;
@@ -355,11 +352,10 @@ void reset_device(HidDevice& dev, std::string_view new_password, Account account
     // the now-present data partition with mkfs.
 }
 
-void set_password(HidDevice& dev, std::string_view new_password, Account account)
+void set_password(Channel& ch, std::string_view new_password, Account account)
 {
     if (new_password.empty() || new_password.size() > kMaxPassphraseBytes)
         throw UnlockError("New password must be 1 to 64 characters");
-    Channel ch(dev);
     SystemRandom rng;
 
     // The password is set by the FF A2 Configure token (see reset_device):
@@ -442,9 +438,8 @@ Key128 open_pvc0(Channel& ch, Random& rng)
 
 }  // namespace
 
-Profile read_profile(HidDevice& dev)
+Profile read_profile(Channel& ch)
 {
-    Channel ch(dev);
     SystemRandom rng;
     ch.drain();
     Key128 shared = open_pvc0(ch, rng);
@@ -466,9 +461,8 @@ Profile read_profile(HidDevice& dev)
     return p;
 }
 
-void write_profile(HidDevice& dev, const Profile& profile)
+void write_profile(Channel& ch, const Profile& profile)
 {
-    Channel ch(dev);
     SystemRandom rng;
     ch.drain();
     Key128 shared = open_pvc0(ch, rng);
@@ -497,9 +491,8 @@ void write_profile(HidDevice& dev, const Profile& profile)
     secure_wipe(shared.data(), shared.size());
 }
 
-void write_protected_pages(HidDevice& dev, const std::vector<std::pair<uint8_t, Bytes>>& pages)
+void write_protected_pages(Channel& ch, const std::vector<std::pair<uint8_t, Bytes>>& pages)
 {
-    Channel ch(dev);
     SystemRandom rng;
 
     auto open_session = [&]() -> Key128 {

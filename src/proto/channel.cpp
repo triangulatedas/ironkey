@@ -60,35 +60,54 @@ Bytes Channel::command(uint8_t sub, uint8_t cdb2, Direction dir, ByteView data,
 {
     uint32_t len = data_len ? data_len : static_cast<uint32_t>(data.size());
     last_status.clear();
-    dev_.write_output(build_command_report(sub, cdb2, dir, len, cdb));
 
-    if (!dev_.read_input(response_timeout))
+    if (transport_) {
+        Bytes status;
+        Bytes result = transport_->exchange(sub, cdb2, dir, data, len, cdb, status);
+        last_status = std::move(status);
+        if (last_status.size() >= 6) {
+            uint16_t st = last_status[4] | (last_status[5] << 8);
+            if (st != 0)
+                throw DeviceStatusError(sub, st);
+        }
+        if (dir == Direction::Read && result.size() > len)
+            result.resize(len);
+        return result;
+    }
+
+    dev_->write_output(build_command_report(sub, cdb2, dir, len, cdb));
+
+    if (!dev_->read_input(response_timeout))
         throw IronKeyError("No acknowledgement for command " + hex8(sub));
 
     if (dir == Direction::Write && !data.empty()) {
-        dev_.set_feature(data);
-        check_status(sub, dev_.read_input(response_timeout));
+        dev_->set_feature(data);
+        check_status(sub, dev_->read_input(response_timeout));
         return {};
     }
 
     if (dir == Direction::Read && len > 0) {
         if (read_delay.count() > 0)
             std::this_thread::sleep_for(read_delay);
-        Bytes result = dev_.get_feature();
+        Bytes result = dev_->get_feature();
         // The status that follows a read carries no error information.
-        last_status = dev_.read_input(response_timeout).value_or(Bytes{});
+        last_status = dev_->read_input(response_timeout).value_or(Bytes{});
         if (result.size() > len)
             result.resize(len);
         return result;
     }
 
-    check_status(sub, dev_.read_input(response_timeout));
+    check_status(sub, dev_->read_input(response_timeout));
     return {};
 }
 
 void Channel::drain()
 {
-    while (dev_.read_input(std::chrono::milliseconds(200)))
+    if (transport_) {
+        transport_->drain_input();
+        return;
+    }
+    while (dev_->read_input(std::chrono::milliseconds(200)))
         ;
 }
 

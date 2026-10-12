@@ -21,10 +21,23 @@ public:
 std::array<uint8_t, kOutputReportSize> build_command_report(
     uint8_t sub, uint8_t cdb2, Direction dir, uint32_t data_len, const Cdb& cdb);
 
-// Sends IronKey vendor commands over a HidDevice.
+// An alternative command transport (the SCSI/SG_IO path) used instead of the
+// HID report dance. One call = one vendor command. `status` is filled in the
+// HID status layout ([4..5] = status word) so the Channel treats both the
+// same.
+class Transport {
+public:
+    virtual ~Transport() = default;
+    virtual Bytes exchange(uint8_t sub, uint8_t cdb2, Direction dir, ByteView data,
+                           uint32_t data_len, const Cdb& cdb, Bytes& status) = 0;
+    virtual void drain_input() {}
+};
+
+// Sends IronKey vendor commands, over HID (the default) or a Transport (SCSI).
 class Channel {
 public:
-    explicit Channel(HidDevice& dev) : dev_(dev) {}
+    explicit Channel(HidDevice& dev) : dev_(&dev) {}
+    explicit Channel(Transport& transport) : transport_(&transport) {}
 
     // Send a command. For Direction::Write, `data` goes out as a feature report;
     // `data_len` overrides the length in the header when non-zero.
@@ -48,7 +61,8 @@ public:
 private:
     void check_status(uint8_t sub, std::optional<Bytes> resp);
 
-    HidDevice& dev_;
+    HidDevice* dev_ = nullptr;
+    Transport* transport_ = nullptr;
 };
 
 }  // namespace ironkey
