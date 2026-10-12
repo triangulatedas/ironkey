@@ -58,11 +58,10 @@ struct AreaParams {
 
 AreaParams read_area_params(Channel& ch);
 
-// Re-keys the data area (FF 8B, 8F, A2), the crypto-erase at the heart of
-// reset/initialize. The FF A2 token is a fresh random area key encrypted under
-// the session key (hypothesis, not yet confirmed on hardware). Returns the
-// device's FF A2 status (0 = accepted). With commit=false it stops before the
-// FF 89 commit, so nothing persists — a safe probe of the token format.
+// Re-keys the data area (FF 8B, 8F, A2) with a random token — a crypto-erase
+// probe that does NOT set a password (use reset_device to also set one).
+// Returns the device's FF A2 status (0 = accepted). With commit=false it stops
+// before the FF 89 commit, so nothing persists — a safe probe of the format.
 uint16_t send_configure_area(Channel& ch, const Key128& shared, uint32_t area_sectors,
                              Random& rng, bool commit);
 
@@ -104,12 +103,11 @@ void change_password(HidDevice& dev, std::string_view old_password, std::string_
 // after a re-key during reset/initialize. The drive must be in HID mode.
 void set_password(HidDevice& dev, std::string_view new_password, Account account = Account::Admin);
 
-// NOTE: does NOT correctly set the password yet - the FF A2 token needs its
-// real plaintext (see PROTOCOL.md); the re-key/crypto-erase works but the
-// password ends up undefined. Not wired into the CLI.
 // Full factory reset / initialize (the vendor "Reset Device" flow): mode flag,
-// a committed area re-key (crypto-erase, DESTROYS ALL DATA), then sets
-// `new_password`. The drive must be in HID mode; no old password is needed.
+// then a single committed FF A2 Configure that both re-keys the area
+// (crypto-erase, DESTROYS ALL DATA) and sets `new_password` (the token is the
+// password encrypted under the session key, CDB[6]=0x41 to re-key), finally a
+// login to verify. The drive must be in HID mode; no old password is needed.
 // Afterwards create a filesystem on the (blank) data partition with mkfs.
 void reset_device(HidDevice& dev, std::string_view new_password, Account account = Account::Admin);
 

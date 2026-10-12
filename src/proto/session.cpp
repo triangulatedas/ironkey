@@ -292,38 +292,52 @@ void reset_device(HidDevice& dev, std::string_view new_password, Account account
     // 1. Mode flag.
     mode_flag();
 
-    // 2. Re-key the area and COMMIT it (the crypto-erase). Token = a fresh
-    //    random area key encrypted under the session key.
+    // 2. Re-key the area AND set the new password, then COMMIT. This single
+    //    FF A2 Configure is both the crypto-erase and the password-set: the
+    //    vendor SDK (NTU_PVC_Configure_Private_Area_Key, reached from
+    //    _UDV_ResetPassword) builds the token as the *password* zero-padded to
+    //    16 bytes and AES-encrypted under the session key, with CDB[6]=0x41 to
+    //    re-key. There is no separate "set password" command: FF A4 is only a
+    //    login/verify. (Confirmed by disassembling the macOS vendor app.)
     {
         Key128 k = open_session();
-        std::array<uint8_t, 16> new_area_key{};
-        rng.fill(new_area_key);
-        Key128 enc_key = aes128_ecb_encrypt(k, new_area_key);
-        secure_wipe(new_area_key.data(), new_area_key.size());
+        Key128 token = encrypt_password(k, new_password);
         Bytes payload = {static_cast<uint8_t>(sectors), static_cast<uint8_t>(sectors >> 8),
                          static_cast<uint8_t>(sectors >> 16), static_cast<uint8_t>(sectors >> 24)};
-        payload.insert(payload.end(), enc_key.begin(), enc_key.end());
+        payload.insert(payload.end(), token.begin(), token.end());
         ch.command(0xA2, 0x00, Direction::Write, payload, 20,
-                   {0x00, 0x00, 0x00, 0x41, 0xA2, 0x00, 0x00, 0x00});
+                   {0x00, static_cast<uint8_t>(account), 0x00, 0x41, 0xA2, 0x00, 0x00, 0x00});
         ch.command(0x89, 0x00, Direction::None);
         secure_wipe(k.data(), k.size());
     }
 
-    // 3. Enter password provisioning.
+    // 3. Close the provisioning session (FF A5 = NTU_Close).
     ch.command(0xA5, 0x00, Direction::None);
 
     // 4. Mode flag again.
     mode_flag();
 
-    // 5. Set the new password (A4 sets, since the committed re-key left none).
+    // 5. Verify by logging in with the new password (FF A4 = NTU_Open). The
+    //    vendor app does this post-set login; a wrong-password report here
+    //    (status byte 6 set) would mean the FF A2 token did not take.
     {
         Key128 k = open_session();
         Key128 enc_pw = encrypt_password(k, new_password);
         ch.command(0xA4, 0x00, Direction::Write, enc_pw, 16,
                    {0x00, static_cast<uint8_t>(account), 0x00, 0x06});
+        bool rejected = ch.last_status.size() > 6 && ch.last_status[6] != 0;
         ch.command(0x89, 0x00, Direction::None);
         secure_wipe(k.data(), k.size());
+        if (rejected)
+            throw UnlockError("Reset completed the re-key but the new password did not verify");
     }
+
+    // NOTE: the crypto-erase leaves the data PARTITION at 0 sectors; the drive
+    // will accept the new password (login succeeds) but not yet present a data
+    // disk. The vendor "Format" step re-activates the partition — a domain
+    // stop/start (FF 26/40/41) around a resize (MyResizeCDPartition, using
+    // NTU_Calculate_Closest). That sequence is not implemented here yet, so a
+    // just-reset drive is provisioned but shows no data volume until formatted.
 }
 
 void set_password(HidDevice& dev, std::string_view new_password, Account account)
@@ -334,20 +348,26 @@ void set_password(HidDevice& dev, std::string_view new_password, Account account
     Channel ch(dev);
     SystemRandom rng;
 
-    // FF A5: enter password-provisioning state (observed before set-password).
-    ch.command(0xA5, 0x00, Direction::None);
+    // The password is set by the FF A2 Configure token (see reset_device):
+    // token = enc(sessionKey, password). CDB[6]=0x41 re-keys/provisions the
+    // area key under the new password. FF A4 is login only, never a setter.
+    ch.drain();
+    uint32_t sectors = read_area_params(ch).data_sectors;
+    if (sectors == 0)
+        throw IronKeyError("Could not read the data area size (FF A0)");
 
-    // Fresh session, then set the password with FF A4 (sets, rather than
-    // verifies, because the area was just re-keyed / is in provisioning).
     RsaKey host = RsaKey::generate512();
     Key128 shared = rsa_handshake(ch, rng, host);
     Bytes pvc_payload = encrypt_pvc_key(kPvc0Key, shared, rng.bytes(32));
     ch.command(0x8B, 0x00, Direction::None, {}, 0, {0x00, 0x03});
     ch.command(0x8F, 0x00, Direction::Write, pvc_payload, 0, {0x02});
 
-    Key128 enc_pw = encrypt_password(shared, new_password);
-    ch.command(0xA4, 0x00, Direction::Write, enc_pw, 16,
-               {0x00, static_cast<uint8_t>(account), 0x00, 0x06});
+    Key128 token = encrypt_password(shared, new_password);
+    Bytes payload = {static_cast<uint8_t>(sectors), static_cast<uint8_t>(sectors >> 8),
+                     static_cast<uint8_t>(sectors >> 16), static_cast<uint8_t>(sectors >> 24)};
+    payload.insert(payload.end(), token.begin(), token.end());
+    ch.command(0xA2, 0x00, Direction::Write, payload, 20,
+               {0x00, static_cast<uint8_t>(account), 0x00, 0x41, 0xA2, 0x00, 0x00, 0x00});
     ch.command(0x89, 0x00, Direction::None);
     secure_wipe(shared.data(), shared.size());
 }
