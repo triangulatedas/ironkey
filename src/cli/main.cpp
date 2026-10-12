@@ -165,6 +165,24 @@ std::string find_scsi_helper()
     return "ironkey-scsi-helper";
 }
 
+// True if the replug-free SCSI path can be used right now: the drive is in
+// normal storage mode and a harmless FF A0 read actually succeeds through the
+// helper (so the helper exists, is setcap'd, and can reach the device).
+bool scsi_usable(const UsbDevice& dev)
+{
+    if (dev.disks.empty())
+        return false;
+    try {
+        ScsiTransport st(find_scsi_helper(), dev.disks.front().node);
+        Channel ch(st);
+        ch.drain();
+        read_area_params(ch);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 // Diagnostic: read GetAreaParams (FF A0) over the SCSI/SG_IO path (via the
 // helper) to validate the transport. The drive must be in normal storage mode.
 int cmd_scsi_probe(const std::string& port)
@@ -653,17 +671,31 @@ int cmd_scsi_reenum(const std::string& port)
 
 // Factory reset / forgot-password recovery: wipes the drive (crypto-erase) and
 // sets a brand-new password. No old password needed.
-int cmd_reset(const std::string& port, bool password_stdin, bool use_scsi, const Profile& profile)
+int cmd_reset(const std::string& port, bool password_stdin, std::optional<bool> prefer_scsi,
+              const Profile& profile)
 {
     UsbDevice dev;
     if (!select_device(port, dev))
         return 1;
-    if (use_scsi) {
-        if (dev.disks.empty())
-            return std::fprintf(stderr, "SCSI reset needs the drive in normal storage mode "
-                                        "(replug it if it is stuck in HID mode).\n"),
-                   1;
+
+    // Choose the transport: explicit --scsi/--hid wins; otherwise use SCSI
+    // (no replug) when the helper is installed and working, else HID.
+    bool use_scsi;
+    if (prefer_scsi.has_value()) {
+        use_scsi = *prefer_scsi;
+        if (use_scsi && !scsi_usable(dev)) {
+            std::fprintf(stderr, "SCSI reset is not available: the drive must be in normal "
+                                 "storage mode and ironkey-scsi-helper must be installed with "
+                                 "`setcap cap_sys_rawio+ep`.\n");
+            return 1;
+        }
     } else {
+        use_scsi = scsi_usable(dev);
+    }
+    print_log(use_scsi ? "Using the SCSI path (no replug needed)."
+                       : "Using the HID path (one replug needed after reset).");
+
+    if (!use_scsi) {
         check_access(dev);
         ensure_hid_mode(dev, print_log);
     }
@@ -768,10 +800,12 @@ void usage()
         "                             Change a password in place (prompts for current and\n"
         "                             new). Does not unlock the drive.\n"
         "  reset [--name N] [--company C] [--description D]\n"
-        "        [--admin-hint H] [--user-hint H]\n"
+        "        [--admin-hint H] [--user-hint H] [--scsi|--hid]\n"
         "                             Forgot-password recovery: ERASE the drive and set a\n"
         "                             new password (no old password needed). Optional owner\n"
-        "                             info is stored on the drive. Replug and format after.\n"
+        "                             info is stored on the drive. Uses the replug-free SCSI\n"
+        "                             path automatically when the helper is installed, else\n"
+        "                             HID (replug after). --scsi/--hid force the choice.\n"
         "  info                       Show owner info (name/company/hint) without unlocking\n"
         "  format [--fs vfat|exfat|ext4] [--label NAME]\n"
         "                             Create a filesystem on an unlocked drive's data disk\n"
@@ -800,7 +834,7 @@ int main(int argc, char** argv)
     Profile profile;             // owner info for `reset`
     std::string fstype = "vfat"; // for `format`
     std::string label = "IRONKEY";
-    bool use_scsi = false;         // for `reset`
+    std::optional<bool> prefer_scsi; // for `reset`: nullopt=auto
     for (int i = 2; i < argc; ++i) {
         std::string_view arg = argv[i];
         if (arg == "--device" && i + 1 < argc) {
@@ -810,7 +844,9 @@ int main(int argc, char** argv)
         } else if (cmd == "format" && arg == "--label" && i + 1 < argc) {
             label = argv[++i];
         } else if (cmd == "reset" && arg == "--scsi") {
-            use_scsi = true;
+            prefer_scsi = true;
+        } else if (cmd == "reset" && arg == "--hid") {
+            prefer_scsi = false;
         } else if (arg == "--password-stdin" && (cmd == "unlock" || cmd == "reset")) {
             password_stdin = true;
         } else if (cmd == "reset" && i + 1 < argc &&
@@ -858,7 +894,7 @@ int main(int argc, char** argv)
         if (cmd == "reset-probe")
             return cmd_reset_probe(port);
         if (cmd == "reset")
-            return cmd_reset(port, password_stdin, use_scsi, profile);
+            return cmd_reset(port, password_stdin, prefer_scsi, profile);
         if (cmd == "reset-selftest")
             return cmd_reset_selftest(port);
         if (cmd == "info")

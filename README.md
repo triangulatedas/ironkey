@@ -199,10 +199,10 @@ creates a filesystem on an unlocked drive's data disk through udisks (polkit,
 no root); `ext4` is made owned by the invoking user.
 
 **SCSI transport (replug-free reset)** — the vendor commands can run over
-`SG_IO` instead of HID, keeping the drive in storage mode. That lets `reset
---scsi` issue `FF 01` (a soft power-cycle) to re-enumerate the drive in
-software, so no physical replug is needed: `reset --scsi` → `unlock` →
-`format`, hands-off. Sending opcode `0xFF` over `SG_IO` needs `CAP_SYS_RAWIO`,
+`SG_IO` instead of HID, keeping the drive in storage mode. That lets `reset`
+issue `FF 01` (a soft power-cycle) to re-enumerate the drive in software, so no
+physical replug is needed: `reset` → `unlock` → `format`, hands-off. `reset`
+selects this path automatically when the helper is available. Sending opcode `0xFF` over `SG_IO` needs `CAP_SYS_RAWIO`,
 which a udev rule cannot grant, so this path uses a tiny privileged helper
 (`ironkey-scsi-helper`, installed with `setcap cap_sys_rawio+ep`) that does
 nothing but relay `SG_IO`; the main tool stays unprivileged. HID remains the
@@ -262,7 +262,7 @@ ironkey-unlock unlock --password-stdin     # read the password from stdin (scrip
 ironkey-unlock change-password             # change a password in place (admin or --user)
 ironkey-unlock reset                       # forgot-password: ERASE and set a new password
 ironkey-unlock reset --name N --company C --admin-hint H   # also store owner info
-ironkey-unlock reset --scsi                # reset with no physical replug (needs the helper)
+ironkey-unlock reset --scsi / --hid        # force the transport (default: auto)
 ironkey-unlock info                        # show owner info (name/company/hints), no unlock
 ironkey-unlock format --fs ext4 --label X  # create a filesystem on the unlocked data disk
 ironkey-unlock lock [--device PORT]        # unmount and power off, which locks the drive
@@ -272,10 +272,12 @@ ironkey-unlock handshake [--device PORT]   # diagnostic: key exchange only, no p
 
 `--device PORT` is needed only when more than one IronKey is connected.
 
-After a plain `reset`, unplug/replug the drive once (the device applies its new
-layout on a power cycle), then `unlock` and `format`. `reset --scsi` does that
-power-cycle in software (`FF 01`), so no replug is needed — it requires the
-privileged helper (see the SCSI section under Status).
+`reset` automatically uses the **replug-free SCSI path** when the privileged
+helper is installed and the drive is in storage mode (it preflights a harmless
+read), and otherwise falls back to **HID**, where you unplug/replug the drive
+once before `unlock` and `format` (the device applies its new layout on a power
+cycle). `--scsi` and `--hid` force the choice. See the SCSI section under
+Status.
 
 `lock` does the same as **Eject** in a file manager. It unmounts the drive's
 data partitions and CD-ROM, then asks udisks to power it off. The drive locks
