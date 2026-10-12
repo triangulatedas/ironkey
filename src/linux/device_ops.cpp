@@ -85,6 +85,59 @@ void unlock_device(UsbDevice& dev, std::string_view password, const Login& login
     }
 }
 
+void set_password_device(UsbDevice& dev, std::string_view new_password, const Login& login,
+                         const Log& log, bool trace)
+{
+    if (!dev.in_hid_mode())
+        throw IronKeyError("Device is not in HID mode");
+    HidrawDevice hid(dev.hidraw.front());
+    TracingHidDevice traced(hid, log);
+    set_password(trace ? static_cast<HidDevice&>(traced) : hid, new_password, login.account);
+    log("Password set.");
+}
+
+void reset_device_full(UsbDevice& dev, std::string_view new_password, const Log& log, bool trace)
+{
+    if (!dev.in_hid_mode())
+        throw IronKeyError("Device is not in HID mode");
+    HidrawDevice hid(dev.hidraw.front());
+    TracingHidDevice traced(hid, log);
+    // Reset always sets the single/admin password (index 0).
+    reset_device(trace ? static_cast<HidDevice&>(traced) : hid, new_password, Account::Admin);
+    log("Reset complete: area wiped and new password set.");
+}
+
+uint16_t rekey_area_probe(UsbDevice& dev, const Log& log, bool commit, bool trace)
+{
+    if (!dev.in_hid_mode())
+        throw IronKeyError("Device is not in HID mode");
+
+    HidrawDevice hid(dev.hidraw.front());
+    TracingHidDevice traced(hid, log);
+    HidDevice& io = trace ? static_cast<HidDevice&>(traced) : hid;
+
+    Channel ch(io);
+    SystemRandom rng;
+
+    // The area size to re-key comes from the drive's own GetAreaParams.
+    uint32_t sectors;
+    {
+        Channel probe(hid);
+        probe.drain();
+        sectors = read_area_params(probe).data_sectors;
+    }
+    if (sectors == 0)
+        throw IronKeyError("Could not read the data area size (FF A0)");
+    log("Data area: " + std::to_string(sectors) + " sectors (" +
+        std::to_string(uint64_t(sectors) * 512 / (1u << 30)) + " GiB)");
+
+    RsaKey host = RsaKey::generate512();
+    Key128 shared = rsa_handshake(ch, rng, host);
+    uint16_t status = send_configure_area(ch, shared, sectors, rng, commit);
+    secure_wipe(shared.data(), shared.size());
+    return status;
+}
+
 void change_password_device(UsbDevice& dev, std::string_view old_password,
                             std::string_view new_password, const Login& login, const Log& log,
                             bool trace)

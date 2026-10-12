@@ -298,6 +298,101 @@ int cmd_change_password(const std::string& port, std::optional<Account> requeste
     return 0;
 }
 
+// Set a password on a drive that has no (valid) password, e.g. right after a
+// re-key. Prompts for the new password; does not require an old one.
+int cmd_set_password(const std::string& port, std::optional<Account> requested, bool trace)
+{
+    UsbDevice dev;
+    if (!select_device(port, dev))
+        return 1;
+    check_access(dev);
+    ensure_hid_mode(dev, print_log);
+    Login login = choose_login(read_drive_status(dev), requested);
+
+    std::fprintf(stderr, "%s\n\n", kUntrustedHostWarning);
+
+    Password new_pw, confirm;
+    std::string name = login.password_name();
+    read_password_tty("New " + name + ": ", new_pw);
+    read_password_tty("Confirm new " + name + ": ", confirm);
+    if (new_pw.value != confirm.value) {
+        std::fprintf(stderr, "Passwords do not match; nothing was set.\n");
+        return 1;
+    }
+    if (new_pw.value.empty() || new_pw.value.size() > kMaxPasswordBytes) {
+        std::fprintf(stderr, "Password must be 1 to 16 bytes (passphrase mode is not supported "
+                             "yet); nothing was set.\n");
+        return 1;
+    }
+
+    set_password_device(dev, new_pw.value, login, print_log, trace);
+    std::printf("Set the %s on %s.\n", name.c_str(), describe(dev).c_str());
+    return 0;
+}
+
+// Full factory reset: wipe the drive and set a new password. Destructive.
+int cmd_reset(const std::string& port, bool trace)
+{
+    UsbDevice dev;
+    if (!select_device(port, dev))
+        return 1;
+    check_access(dev);
+
+    std::fprintf(stderr, "%s\n\n", kUntrustedHostWarning);
+    std::printf("This ERASES ALL DATA on %s and sets a new password.\n"
+                "Type ERASE to continue: ",
+                describe(dev).c_str());
+    std::fflush(stdout);
+    char line[64] = {};
+    if (!std::fgets(line, sizeof line, stdin) || std::string(line) != "ERASE\n") {
+        std::puts("Aborted; nothing was changed.");
+        return 1;
+    }
+
+    Password new_pw, confirm;
+    read_password_tty("New password: ", new_pw);
+    read_password_tty("Confirm new password: ", confirm);
+    if (new_pw.value != confirm.value) {
+        std::fprintf(stderr, "Passwords do not match; aborted.\n");
+        return 1;
+    }
+    if (new_pw.value.empty() || new_pw.value.size() > kMaxPasswordBytes) {
+        std::fprintf(stderr, "Password must be 1 to 16 bytes (passphrase mode is not supported "
+                             "yet); aborted.\n");
+        return 1;
+    }
+
+    ensure_hid_mode(dev, print_log);
+    reset_device_full(dev, new_pw.value, print_log, trace);
+    std::printf("Done. Unlock with the new password, then create a filesystem, e.g.:\n"
+                "  ironkey-unlock unlock && sudo mkfs.exfat /dev/sdX1\n");
+    return 0;
+}
+
+// Diagnostic: probe the FF A2 area re-key token format WITHOUT committing, to
+// test the reset hypothesis safely. Sends no FF 89, so nothing should persist.
+int cmd_reset_probe(const std::string& port)
+{
+    UsbDevice dev;
+    if (!select_device(port, dev))
+        return 1;
+    if (dev.is_unlocked()) {
+        std::fprintf(stderr, "Lock the drive first (it is unlocked).\n");
+        return 1;
+    }
+    check_access(dev);
+    ensure_hid_mode(dev, print_log);
+
+    std::puts("PROBE: sending FF A2 area re-key with a random token, NO commit (FF 89).");
+    uint16_t status = rekey_area_probe(dev, print_log, /*commit=*/false, /*trace=*/true);
+    if (status == 0)
+        std::puts("\nFF A2 ACCEPTED (status 0): the token format looks right. "
+                  "Nothing was committed.");
+    else
+        std::printf("\nFF A2 rejected (status 0x%04X): the token format is wrong.\n", status);
+    return status == 0 ? 0 : 3;
+}
+
 int cmd_lock(const std::string& port)
 {
     // Only drives that are unlocked are candidates, so "the only IronKey"
@@ -370,11 +465,14 @@ int main(int argc, char** argv)
             password_stdin = true;
         } else if (arg == "--trace" && cmd == "unlock") {
             trace = true;
-        } else if (arg == "--trace" && cmd == "change-password") {
+        } else if (arg == "--trace" &&
+                   (cmd == "change-password" || cmd == "set-password" || cmd == "reset")) {
             trace = true;
-        } else if (arg == "--user" && (cmd == "unlock" || cmd == "change-password")) {
+        } else if (arg == "--user" &&
+                   (cmd == "unlock" || cmd == "change-password" || cmd == "set-password")) {
             account = Account::User;
-        } else if (arg == "--admin" && (cmd == "unlock" || cmd == "change-password")) {
+        } else if (arg == "--admin" &&
+                   (cmd == "unlock" || cmd == "change-password" || cmd == "set-password")) {
             account = Account::Admin;
         } else if (arg == "--no-session" && cmd == "dump") {
             with_session = false;
@@ -393,6 +491,12 @@ int main(int argc, char** argv)
             return cmd_dump(port, with_session);
         if (cmd == "change-password")
             return cmd_change_password(port, account, trace);
+        if (cmd == "reset-probe")
+            return cmd_reset_probe(port);
+        if (cmd == "reset")
+            return cmd_reset(port, trace);
+        if (cmd == "set-password")
+            return cmd_set_password(port, account, trace);
         if (cmd == "lock")
             return cmd_lock(port);
         if (cmd == "hid-mode")

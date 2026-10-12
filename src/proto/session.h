@@ -58,6 +58,14 @@ struct AreaParams {
 
 AreaParams read_area_params(Channel& ch);
 
+// Re-keys the data area (FF 8B, 8F, A2), the crypto-erase at the heart of
+// reset/initialize. The FF A2 token is a fresh random area key encrypted under
+// the session key (hypothesis, not yet confirmed on hardware). Returns the
+// device's FF A2 status (0 = accepted). With commit=false it stops before the
+// FF 89 commit, so nothing persists — a safe probe of the token format.
+uint16_t send_configure_area(Channel& ch, const Key128& shared, uint32_t area_sectors,
+                             Random& rng, bool commit);
+
 // Fixed PVC key from the vendor application (see PROTOCOL.md, Step 4).
 extern const std::array<uint8_t, 64> kPvc0Key;
 
@@ -91,5 +99,15 @@ void unlock(HidDevice& dev, std::string_view password, Account account = Account
 // Complete password change on a device already in HID mode.
 void change_password(HidDevice& dev, std::string_view old_password, std::string_view new_password,
                      Account account = Account::Admin);
+
+// Set a password with no prior password (FF A5, then 8B/8F/A4/89), as used
+// after a re-key during reset/initialize. The drive must be in HID mode.
+void set_password(HidDevice& dev, std::string_view new_password, Account account = Account::Admin);
+
+// Full factory reset / initialize (the vendor "Reset Device" flow): mode flag,
+// a committed area re-key (crypto-erase, DESTROYS ALL DATA), then sets
+// `new_password`. The drive must be in HID mode; no old password is needed.
+// Afterwards create a filesystem on the (blank) data partition with mkfs.
+void reset_device(HidDevice& dev, std::string_view new_password, Account account = Account::Admin);
 
 }  // namespace ironkey

@@ -186,6 +186,42 @@ void send_change_password(Channel& ch, const Key128& shared, std::string_view ol
     ch.command(0x89, 0x00, Direction::None);
 }
 
+uint16_t send_configure_area(Channel& ch, const Key128& shared, uint32_t area_sectors,
+                             Random& rng, bool commit)
+{
+    Bytes pvc_payload = encrypt_pvc_key(kPvc0Key, shared, rng.bytes(32));
+
+    // Same secure-access + PVC open as unlock (observed in the reset capture).
+    ch.command(0x8B, 0x00, Direction::None, {}, 0, {0x00, 0x03});
+    ch.command(0x8F, 0x00, Direction::Write, pvc_payload, 0, {0x02});
+
+    // FF A2 ConfigPrivateArea: payload = area size (4B LE) + a fresh random
+    // area key encrypted under the session key (hypothesis: re-keying is the
+    // crypto-erase). CDB bytes 6..7 = 0x41 0xA2, as captured.
+    std::array<uint8_t, 16> new_area_key{};
+    rng.fill(new_area_key);
+    Key128 enc_key = aes128_ecb_encrypt(shared, new_area_key);
+    secure_wipe(new_area_key.data(), new_area_key.size());
+
+    Bytes payload = {static_cast<uint8_t>(area_sectors), static_cast<uint8_t>(area_sectors >> 8),
+                     static_cast<uint8_t>(area_sectors >> 16),
+                     static_cast<uint8_t>(area_sectors >> 24)};
+    payload.insert(payload.end(), enc_key.begin(), enc_key.end());
+
+    uint16_t a2_status = 0;
+    try {
+        ch.command(0xA2, 0x00, Direction::Write, payload, 20,
+                   {0x00, 0x00, 0x00, 0x41, 0xA2, 0x00, 0x00, 0x00});
+    } catch (const DeviceStatusError& e) {
+        a2_status = e.status;
+    }
+
+    // Commit only when asked; a probe run stops here so nothing persists.
+    if (commit && a2_status == 0)
+        ch.command(0x89, 0x00, Direction::None);
+    return a2_status;
+}
+
 AreaParams read_area_params(Channel& ch)
 {
     AreaParams p;
@@ -217,6 +253,102 @@ void change_password(HidDevice& dev, std::string_view old_password, std::string_
     RsaKey host = RsaKey::generate512();
     Key128 shared = rsa_handshake(ch, rng, host);
     send_change_password(ch, shared, old_password, new_password, rng, account);
+    secure_wipe(shared.data(), shared.size());
+}
+
+void reset_device(HidDevice& dev, std::string_view new_password, Account account)
+{
+    if (new_password.empty() || new_password.size() > kMaxPasswordBytes)
+        throw UnlockError("New password must be 1 to 16 bytes. Passphrase mode (10-64 "
+                          "characters) is not supported yet");
+    Channel ch(dev);
+    SystemRandom rng;
+
+    uint32_t sectors = 0;
+    {
+        ch.drain();
+        sectors = read_area_params(ch).data_sectors;
+    }
+    if (sectors == 0)
+        throw IronKeyError("Could not read the data area size (FF A0)");
+
+    // A "secure session": handshake, start secure access (type 3), open the PVC
+    // with the factory PVC0 key. Returns the session key.
+    auto open_session = [&]() -> Key128 {
+        RsaKey host = RsaKey::generate512();
+        Key128 shared = rsa_handshake(ch, rng, host);
+        Bytes pvc = encrypt_pvc_key(kPvc0Key, shared, rng.bytes(32));
+        ch.command(0x8B, 0x00, Direction::None, {}, 0, {0x00, 0x03});
+        ch.command(0x8F, 0x00, Direction::Write, pvc, 0, {0x02});
+        return shared;
+    };
+    // FF 26 mode flag (payload 00 02 00), in its own session (seen twice).
+    auto mode_flag = [&]() {
+        Key128 k = open_session();
+        ch.command(0x26, 0x00, Direction::Write, Bytes{0x00, 0x02, 0x00}, 3, {0x00, 0x53});
+        secure_wipe(k.data(), k.size());
+    };
+
+    // 1. Mode flag.
+    mode_flag();
+
+    // 2. Re-key the area and COMMIT it (the crypto-erase). Token = a fresh
+    //    random area key encrypted under the session key.
+    {
+        Key128 k = open_session();
+        std::array<uint8_t, 16> new_area_key{};
+        rng.fill(new_area_key);
+        Key128 enc_key = aes128_ecb_encrypt(k, new_area_key);
+        secure_wipe(new_area_key.data(), new_area_key.size());
+        Bytes payload = {static_cast<uint8_t>(sectors), static_cast<uint8_t>(sectors >> 8),
+                         static_cast<uint8_t>(sectors >> 16), static_cast<uint8_t>(sectors >> 24)};
+        payload.insert(payload.end(), enc_key.begin(), enc_key.end());
+        ch.command(0xA2, 0x00, Direction::Write, payload, 20,
+                   {0x00, 0x00, 0x00, 0x41, 0xA2, 0x00, 0x00, 0x00});
+        ch.command(0x89, 0x00, Direction::None);
+        secure_wipe(k.data(), k.size());
+    }
+
+    // 3. Enter password provisioning.
+    ch.command(0xA5, 0x00, Direction::None);
+
+    // 4. Mode flag again.
+    mode_flag();
+
+    // 5. Set the new password (A4 sets, since the committed re-key left none).
+    {
+        Key128 k = open_session();
+        Key128 enc_pw = encrypt_password(k, new_password);
+        ch.command(0xA4, 0x00, Direction::Write, enc_pw, 16,
+                   {0x00, static_cast<uint8_t>(account), 0x00, 0x06});
+        ch.command(0x89, 0x00, Direction::None);
+        secure_wipe(k.data(), k.size());
+    }
+}
+
+void set_password(HidDevice& dev, std::string_view new_password, Account account)
+{
+    if (new_password.empty() || new_password.size() > kMaxPasswordBytes)
+        throw UnlockError("New password must be 1 to 16 bytes. Passphrase mode (10-64 "
+                          "characters) is not supported yet");
+    Channel ch(dev);
+    SystemRandom rng;
+
+    // FF A5: enter password-provisioning state (observed before set-password).
+    ch.command(0xA5, 0x00, Direction::None);
+
+    // Fresh session, then set the password with FF A4 (sets, rather than
+    // verifies, because the area was just re-keyed / is in provisioning).
+    RsaKey host = RsaKey::generate512();
+    Key128 shared = rsa_handshake(ch, rng, host);
+    Bytes pvc_payload = encrypt_pvc_key(kPvc0Key, shared, rng.bytes(32));
+    ch.command(0x8B, 0x00, Direction::None, {}, 0, {0x00, 0x03});
+    ch.command(0x8F, 0x00, Direction::Write, pvc_payload, 0, {0x02});
+
+    Key128 enc_pw = encrypt_password(shared, new_password);
+    ch.command(0xA4, 0x00, Direction::Write, enc_pw, 16,
+               {0x00, static_cast<uint8_t>(account), 0x00, 0x06});
+    ch.command(0x89, 0x00, Direction::None);
     secure_wipe(shared.data(), shared.size());
 }
 

@@ -100,6 +100,24 @@ extern const char* const kUntrustedHostWarning;
 void unlock_device(UsbDevice& dev, std::string_view password, const Login& login,
                    const Log& log, bool trace = false);
 
+// Sets a password with no prior password (after a re-key), the drive being in
+// HID mode. `login.account` picks admin (index 0) or user (index 1).
+void set_password_device(UsbDevice& dev, std::string_view new_password, const Login& login,
+                         const Log& log, bool trace = false);
+
+// Full factory reset: wipes the drive (crypto-erase, DESTROYS ALL DATA) and
+// sets a new single/admin password. The drive must be in HID mode; no old
+// password is needed. Create a filesystem afterwards with mkfs.
+void reset_device_full(UsbDevice& dev, std::string_view new_password, const Log& log,
+                       bool trace = false);
+
+// Re-keys the data area (the crypto-erase step of reset/initialize). Reads the
+// area size, runs a handshake, and sends FF 8B/8F/A2. Returns the FF A2 status
+// (0 = accepted). With commit=false it stops before the FF 89 commit so
+// nothing persists — use it to probe whether the token format is right. The
+// drive must be in HID mode; no password is needed.
+uint16_t rekey_area_probe(UsbDevice& dev, const Log& log, bool commit, bool trace = false);
+
 // Changes a password in place (the drive must be in HID mode). The device
 // rejects a wrong old password with no change (WrongPasswordError). Does not
 // unlock the drive. `login.account` picks admin (FF A6) or user (FF A8).
