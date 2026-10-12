@@ -481,7 +481,7 @@ same ones the unlock path already implements. New commands:
 | `FF 89` | Commit (follows A2, and follows A4). |
 | `FF A5` | Enter password-provisioning state (sent before the set-password session). |
 | `FF 07 01 <lba 4B> <len>` | Prepare/erase a data region (no data phase); used before writing the fresh filesystem. |
-| `FF 62 / FF 63 <idx> <name…>` + 512B | Write an encrypted profile field (hint / contact). The **account name travels in the CDB in cleartext**; the 512B payload is encrypted. |
+| `FF 62 / FF 63 <idx> …` + 512B | Read/write an encrypted profile field (hint / contact). The 512B payload is encrypted; the CDB carries a field index and a fixed 4-byte constant (`72 69 63 6b`, not user data — it is identical across captures regardless of the password set). |
 | `FF 26 00 00 53` + 3B (`00 02 00`) | Set a mode flag during provisioning. |
 | WRITE10 (`2A`) | Standard SCSI writes that lay down the new partition table + FAT (the `buildFAT*` output). |
 
