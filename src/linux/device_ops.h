@@ -68,6 +68,10 @@ std::string lockout_consequence(Account account);
 // drive erases itself", or "" for 0.
 std::string failed_attempts_warning(int failed, Account account);
 
+// Locks an unlocked drive by unmounting it and powering it off, then waits
+// for it to leave the bus. Returns false if it was not unlocked.
+bool lock_device(UsbDevice& dev, const Log& log);
+
 // Polls until the device shows an unlocked data disk.
 bool wait_for_unlocked(UsbDevice& dev, std::chrono::seconds timeout);
 

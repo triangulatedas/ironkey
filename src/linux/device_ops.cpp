@@ -121,6 +121,24 @@ std::string failed_attempts_warning(int failed, Account account)
            " (default limit " + std::to_string(kDefaultMaxFailedAttempts) + ")";
 }
 
+bool lock_device(UsbDevice& dev, const Log& log)
+{
+    if (!dev.is_unlocked())
+        return false;
+    log("Unmounting and powering off " + describe(dev));
+    power_off_drive(dev);
+
+    // udisks detaches the USB device; wait until it is gone or no longer
+    // shows an unlocked disk.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (!refresh(dev) || !dev.is_unlocked())
+            return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    throw IronKeyError("Drive was powered off but is still visible");
+}
+
 bool wait_for_unlocked(UsbDevice& dev, std::chrono::seconds timeout)
 {
     auto deadline = std::chrono::steady_clock::now() + timeout;

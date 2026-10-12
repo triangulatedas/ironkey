@@ -214,7 +214,9 @@ void Agent::run(Worker& w, const std::string& port, DryRun dry_run, Account acco
             }
 
             log(port, "Unlocked: " + disk_list(dev));
-            notify("IronKey unlocked", describe(dev) + " is available as " + disk_list(dev) + ".");
+            notify("IronKey unlocked",
+                   describe(dev) + " is available as " + disk_list(dev) +
+                       ".\nTo lock it, eject it in Files or run: ironkey-unlock lock");
             return finish(State::Done);
         }
     } catch (const DeviceGoneError&) {

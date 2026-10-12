@@ -13,4 +13,10 @@ namespace ironkey {
 // desktop user without root. Returns a description of anything that failed.
 std::vector<std::string> release_volumes(const UsbDevice& dev);
 
+// Unmounts every filesystem on the device (data partitions and CD-ROM), then
+// asks udisks to power the drive off, which locks it. Same as "Eject" in a
+// file manager. Throws IronKeyError (with udisks' message) if a filesystem is
+// busy or the power-off fails.
+void power_off_drive(const UsbDevice& dev);
+
 }  // namespace ironkey

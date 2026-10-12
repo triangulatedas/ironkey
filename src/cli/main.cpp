@@ -249,6 +249,33 @@ int cmd_unlock(const std::string& port, Account account, bool password_stdin, bo
     return 0;
 }
 
+int cmd_lock(const std::string& port)
+{
+    // Only drives that are unlocked are candidates, so "the only IronKey"
+    // means the only unlocked one.
+    std::vector<UsbDevice> unlocked;
+    for (auto& d : find_kingston_devices())
+        if (d.is_ironkey() && d.is_unlocked() && (port.empty() || d.port == port))
+            unlocked.push_back(std::move(d));
+    if (unlocked.empty()) {
+        std::printf(port.empty() ? "No unlocked IronKey found.\n"
+                                 : "No unlocked IronKey on port %s.\n",
+                    port.c_str());
+        return 0;
+    }
+    if (unlocked.size() > 1) {
+        std::fprintf(stderr, "Several IronKeys are unlocked; choose one with --device PORT:\n");
+        for (const auto& d : unlocked)
+            std::fprintf(stderr, "  %s\n", describe(d).c_str());
+        return 1;
+    }
+    UsbDevice dev = std::move(unlocked.front());
+    std::string name = describe(dev);
+    lock_device(dev, print_log);
+    std::printf("Locked %s. It is safe to unplug.\n", name.c_str());
+    return 0;
+}
+
 void usage()
 {
     std::puts(
@@ -263,6 +290,8 @@ void usage()
         "                             --user: the user password on drives with admin and\n"
         "                               user passwords\n"
         "                             --trace logs every HID exchange (secrets redacted)\n"
+        "  lock                       Unmount and power off an unlocked drive, which\n"
+        "                             locks it (same as Eject in a file manager)\n"
         "  hid-mode                   Switch a locked drive to HID mode\n"
         "  handshake                  Diagnostic: key exchange only, sends no password\n"
         "  dump [--no-session]        Diagnostic: dump the drive's config/status queries,\n"
@@ -309,6 +338,8 @@ int main(int argc, char** argv)
             return cmd_unlock(port, account, password_stdin, trace);
         if (cmd == "dump")
             return cmd_dump(port, with_session);
+        if (cmd == "lock")
+            return cmd_lock(port);
         if (cmd == "hid-mode")
             return cmd_hid_mode(port);
         if (cmd == "handshake")

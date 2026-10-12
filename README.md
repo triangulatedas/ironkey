@@ -179,6 +179,8 @@ is mounted by the desktop as usual and a notification shows which disk it is.
 - Cancel leaves the drive locked. The agent doesn't ask again until the drive
   is replugged.
 - Unplugging the drive closes its dialog.
+- The "unlocked" notification says how to lock the drive again (Eject in
+  Files, or `ironkey-unlock lock`).
 - After a failed attempt the dialog comes back with the failure count and a
   warning. Passwords are never retried automatically.
 - `ironkey-agent --user` logs in with the user password on drives set up with
@@ -196,11 +198,18 @@ ironkey-unlock list                        # connected Kingston devices, state, 
 ironkey-unlock unlock [--device PORT]      # prompt for the password and unlock
 ironkey-unlock unlock --user               # log in with the user password (admin+user drives)
 ironkey-unlock unlock --password-stdin     # read the password from stdin (scripts)
+ironkey-unlock lock [--device PORT]        # unmount and power off, which locks the drive
 ironkey-unlock hid-mode  [--device PORT]   # switch a locked drive to HID mode
 ironkey-unlock handshake [--device PORT]   # diagnostic: key exchange only, no password sent
 ```
 
 `--device PORT` is needed only when more than one IronKey is connected.
+
+`lock` does the same as **Eject** in a file manager. It unmounts the drive's
+data partitions and CD-ROM, then asks udisks to power it off. The drive locks
+itself when it loses power, and writes are flushed first, so it is safe to
+unplug afterwards. If a file or window still uses the drive, the command stops
+with udisks' "target is busy" message and the drive stays unlocked.
 `unlock` exits with code 3 if the drive did not unlock.
 
 Example:
