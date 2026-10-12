@@ -422,20 +422,60 @@ int cmd_reset_selftest(const std::string& port)
     std::printf("Self-test: resetting with generated password: %s\n", pw.c_str());
     reset_device_full(dev, pw, print_log, /*trace=*/false);
 
-    // The drive locks after reset; pick up the new state and unlock.
-    refresh(dev);
+    // The drive applies its new area layout on a power cycle, so the data disk
+    // only presents after a replug. We cannot replug from here, so the self-test
+    // stops at "password set" and hands the verification steps to the user.
+    std::printf("\nReset done. Password is: %s\n"
+                "Verify it end to end:\n"
+                "  1. Unplug and replug the drive.\n"
+                "  2. echo -n '%s' | ironkey-unlock unlock --password-stdin\n"
+                "     The data disk should appear at full size.\n",
+                pw.c_str(), pw.c_str());
+    return 0;
+}
+
+// Factory reset / forgot-password recovery: wipes the drive (crypto-erase) and
+// sets a brand-new password. No old password needed.
+int cmd_reset(const std::string& port)
+{
+    UsbDevice dev;
+    if (!select_device(port, dev))
+        return 1;
+    check_access(dev);
     ensure_hid_mode(dev, print_log);
-    Login login = choose_login(read_drive_status(dev), std::nullopt);
-    try {
-        unlock_device(dev, pw, login, print_log, /*trace=*/false);
-    } catch (const NotUnlockedError& e) {
-        std::fprintf(stderr, "SELF-TEST FAILED: %s\n", e.what());
-        return 3;
+
+    std::fprintf(stderr,
+                 "RESET erases ALL DATA on %s and sets a new password.\n"
+                 "This cannot be undone. No current password is needed.\n\n%s\n\n",
+                 describe(dev).c_str(), kUntrustedHostWarning);
+    Password confirm_word;
+    if (!read_password_tty("Type ERASE to continue: ", confirm_word) ||
+        confirm_word.value != "ERASE") {
+        std::fprintf(stderr, "Cancelled; nothing was changed.\n");
+        return 1;
     }
-    std::printf("SELF-TEST PASSED: reset + unlock worked. Password is: %s\n", pw.c_str());
-    for (const auto& d : dev.disks)
-        if (d.size_bytes > 0)
-            std::printf("Data disk: %s (%s)\n", d.node.c_str(), human_size(d.size_bytes).c_str());
+
+    Password new_pw, confirm;
+    read_password_tty("New password: ", new_pw);
+    read_password_tty("Confirm new password: ", confirm);
+    if (new_pw.value != confirm.value) {
+        std::fprintf(stderr, "Passwords do not match; nothing was changed.\n");
+        return 1;
+    }
+    if (new_pw.value.empty() || new_pw.value.size() > kMaxPasswordBytes) {
+        std::fprintf(stderr, "New password must be 1 to 16 bytes (passphrase mode is not "
+                             "supported yet); nothing was changed.\n");
+        return 1;
+    }
+
+    reset_device_full(dev, new_pw.value, print_log, /*trace=*/false);
+    std::printf(
+        "\nReset complete: the drive was wiped and the new password set.\n"
+        "\nNext steps:\n"
+        "  1. Unplug and replug the drive (a power cycle applies the new layout).\n"
+        "  2. ironkey-unlock unlock         (unlock with the new password)\n"
+        "  3. sudo mkfs.vfat -n IRONKEY /dev/sdX   (create a filesystem; use the\n"
+        "     data disk shown by 'unlock', e.g. /dev/sda)\n");
     return 0;
 }
 
@@ -455,6 +495,9 @@ void usage()
         "  change-password [--admin|--user]\n"
         "                             Change a password in place (prompts for current and\n"
         "                             new). Does not unlock the drive.\n"
+        "  reset                      Forgot-password recovery: ERASE the drive and set a\n"
+        "                             new password (no old password needed). Replug and\n"
+        "                             format afterwards.\n"
         "  lock                       Unmount and power off an unlocked drive, which\n"
         "                             locks it (same as Eject in a file manager)\n"
         "  hid-mode                   Switch a locked drive to HID mode\n"
@@ -512,6 +555,8 @@ int main(int argc, char** argv)
             return cmd_change_password(port, account, trace);
         if (cmd == "reset-probe")
             return cmd_reset_probe(port);
+        if (cmd == "reset")
+            return cmd_reset(port);
         if (cmd == "reset-selftest")
             return cmd_reset_selftest(port);
         if (cmd == "format-replay")
