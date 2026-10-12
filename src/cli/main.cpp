@@ -7,7 +7,9 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <iostream>
+#include <thread>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -184,6 +186,66 @@ int cmd_scsi_probe(const std::string& port)
     std::printf("FF A0 OK: data_sectors=%u (%.1f GiB) unlocked=%d admin_failed=%u flags=0x%02x\n",
                 p.data_sectors, p.data_sectors * 512.0 / (1u << 30), p.unlocked,
                 p.admin_failed_attempts, p.account_flags);
+    return 0;
+}
+
+// Diagnostic: unlock over SCSI (password on stdin) and watch whether the data
+// LUN re-presents in place (the whole point of the SCSI path).
+int cmd_scsi_unlock(const std::string& port)
+{
+    UsbDevice dev;
+    if (!select_device(port, dev))
+        return 1;
+    if (dev.disks.empty()) {
+        std::fprintf(stderr, "Drive must be in normal storage mode.\n");
+        return 1;
+    }
+    Password pw;
+    if (!read_password_stdin(pw) || pw.value.empty()) {
+        std::fprintf(stderr, "No password on stdin.\n");
+        return 1;
+    }
+    std::string node = dev.disks.front().node;
+    {
+        ScsiTransport st(find_scsi_helper(), node);
+        Channel ch(st);
+        ch.drain();
+        AreaParams before = read_area_params(ch);
+        Account acct = before.has_user_account() ? Account::User : Account::Admin;
+        try {
+            unlock(ch, pw.value, acct);
+        } catch (const WrongPasswordError&) {
+            std::fprintf(stderr, "Wrong password (SCSI).\n");
+            return 3;
+        }
+        // Mode flag: in storage mode this is what flips the data LUN from
+        // "medium not present" to ready (the capture reads full READ CAPACITY
+        // right after it).
+        SystemRandom rng;
+        RsaKey host = RsaKey::generate512();
+        Key128 shared = rsa_handshake(ch, rng, host);
+        Bytes pvc = encrypt_pvc_key(kPvc0Key, shared, rng.bytes(32));
+        ch.command(0x8B, 0x00, Direction::None, {}, 0, {0x00, 0x03});
+        ch.command(0x8F, 0x00, Direction::Write, pvc, 0, {0x02});
+        ch.command(0x26, 0x00, Direction::Write, Bytes{0x00, 0x02, 0x00}, 3, {0x00, 0x53});
+        secure_wipe(shared.data(), shared.size());
+        AreaParams after = read_area_params(ch);
+        std::printf("FF A0 after login+modeflag: unlocked=%d (device-side)\n", after.unlocked);
+    }
+    // Did the kernel pick up the new capacity in place?
+    for (int i = 0; i < 20; ++i) {
+        refresh(dev);
+        for (const auto& d : dev.disks)
+            if (d.size_bytes > 0) {
+                std::printf("Data disk present in place: %s (%s) — no replug!\n", d.node.c_str(),
+                            human_size(d.size_bytes).c_str());
+                return 0;
+            }
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    }
+    std::printf("Device reports unlocked but the kernel capacity is still 0 "
+                "(%s). A rescan may be needed.\n",
+                node.c_str());
     return 0;
 }
 
@@ -534,15 +596,77 @@ int cmd_info(const std::string& port)
     return 0;
 }
 
-// Factory reset / forgot-password recovery: wipes the drive (crypto-erase) and
-// sets a brand-new password. No old password needed.
-int cmd_reset(const std::string& port, bool password_stdin, const Profile& profile)
+// Experimental: send FF 01 (NTU_Detach_Attach) over SCSI to make the drive
+// re-enumerate itself — an automatic "soft replug" after a reset. The three
+// flags (Detach, Attach, Reboot) come from $IRONKEY_DAR (default "1,1,0") while
+// we find the combination that works.
+int cmd_scsi_reenum(const std::string& port)
 {
     UsbDevice dev;
     if (!select_device(port, dev))
         return 1;
-    check_access(dev);
-    ensure_hid_mode(dev, print_log);
+    if (dev.disks.empty()) {
+        std::fprintf(stderr, "Need the drive in normal storage mode.\n");
+        return 1;
+    }
+    unsigned d = 1, a = 1, r = 0;
+    if (const char* e = std::getenv("IRONKEY_DAR"))
+        std::sscanf(e, "%u,%u,%u", &d, &a, &r);
+    auto f16 = [](Bytes& p, unsigned v) {
+        p.push_back(v & 0xFF);
+        p.push_back((v >> 8) & 0xFF);
+        p.push_back(v & 0xFF);
+        p.push_back(v & 0xFF);
+    };
+    Bytes payload;
+    f16(payload, d);
+    f16(payload, a);
+    f16(payload, r);
+    std::string node = dev.disks.front().node;
+    std::string before = dev.usbfs_node;
+    std::printf("FF 01 detach/attach on %s (Detach=%u Attach=%u Reboot=%u)\n", node.c_str(), d, a,
+                r);
+    try {
+        ScsiTransport st(find_scsi_helper(), node);
+        Channel ch(st);
+        ch.command(0x01, 0x01, Direction::Write, payload, 12, {0, 0, 0, 0, 0, 0, 0, 0});
+        std::printf("FF 01 accepted (status 0).\n");
+    } catch (const std::exception& e) {
+        std::printf("FF 01 returned: %s (device may be detaching, which is the point)\n", e.what());
+    }
+    std::printf("Watching for re-enumeration...\n");
+    for (int i = 0; i < 30; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        UsbDevice now;
+        if (select_device(port, now)) {
+            if (now.usbfs_node != before || i == 29) {
+                std::printf("Now: %s\n", describe(now).c_str());
+                for (const auto& b : now.disks)
+                    std::printf("  disk %s size=%s\n", b.node.c_str(),
+                                human_size(b.size_bytes).c_str());
+                return 0;
+            }
+        }
+    }
+    return 0;
+}
+
+// Factory reset / forgot-password recovery: wipes the drive (crypto-erase) and
+// sets a brand-new password. No old password needed.
+int cmd_reset(const std::string& port, bool password_stdin, bool use_scsi, const Profile& profile)
+{
+    UsbDevice dev;
+    if (!select_device(port, dev))
+        return 1;
+    if (use_scsi) {
+        if (dev.disks.empty())
+            return std::fprintf(stderr, "SCSI reset needs the drive in normal storage mode "
+                                        "(replug it if it is stuck in HID mode).\n"),
+                   1;
+    } else {
+        check_access(dev);
+        ensure_hid_mode(dev, print_log);
+    }
 
     std::fprintf(stderr,
                  "RESET erases ALL DATA on %s and sets a new password.\n"
@@ -573,6 +697,47 @@ int cmd_reset(const std::string& port, bool password_stdin, const Profile& profi
     if (new_pw.value.empty() || new_pw.value.size() > kMaxPassphraseBytes) {
         std::fprintf(stderr, "New password must be 1 to 64 characters; nothing was changed.\n");
         return 1;
+    }
+
+    if (use_scsi) {
+        {
+            ScsiTransport st(find_scsi_helper(), dev.disks.front().node);
+            Channel ch(st);
+            reset_device(ch, new_pw.value, Account::Admin);
+            print_log("Reset complete: area wiped and new password set.");
+            if (!profile.empty()) {
+                write_profile(ch, profile);
+                print_log("Owner info written.");
+            }
+            // FF 01 (NTU_Detach_Attach, Reboot=1): a soft power-cycle that makes
+            // the drive re-enumerate and apply the new area geometry — replaces
+            // the physical replug. The device drops off the bus, so this command
+            // does not return a status; the exception is expected.
+            try {
+                Bytes ff01 = {0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1};
+                ch.command(0x01, 0x01, Direction::Write, ff01, 12, {0, 0, 0, 0, 0, 0, 0, 0});
+            } catch (const std::exception&) {
+            }
+        }
+        print_log("Re-enumerating the drive (soft power-cycle)...");
+        // Wait for the device to drop off the bus and come back, then let udev
+        // settle (the node numbers and access ACLs change on re-enumeration).
+        UsbDevice back;
+        bool went_away = false;
+        for (int i = 0; i < 50; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            bool present = select_device(port, back);
+            if (!present)
+                went_away = true;
+            else if (went_away)
+                break;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::printf("\nReset complete over SCSI — no physical replug needed.\n"
+                    "Next steps:\n"
+                    "  1. ironkey-unlock unlock         (unlock with the new password)\n"
+                    "  2. ironkey-unlock format --fs ext4   (create a filesystem)\n");
+        return 0;
     }
 
     reset_device_full(dev, new_pw.value, profile, print_log, /*trace=*/false);
@@ -635,6 +800,7 @@ int main(int argc, char** argv)
     Profile profile;             // owner info for `reset`
     std::string fstype = "vfat"; // for `format`
     std::string label = "IRONKEY";
+    bool use_scsi = false;         // for `reset`
     for (int i = 2; i < argc; ++i) {
         std::string_view arg = argv[i];
         if (arg == "--device" && i + 1 < argc) {
@@ -643,6 +809,8 @@ int main(int argc, char** argv)
             fstype = argv[++i];
         } else if (cmd == "format" && arg == "--label" && i + 1 < argc) {
             label = argv[++i];
+        } else if (cmd == "reset" && arg == "--scsi") {
+            use_scsi = true;
         } else if (arg == "--password-stdin" && (cmd == "unlock" || cmd == "reset")) {
             password_stdin = true;
         } else if (cmd == "reset" && i + 1 < argc &&
@@ -690,7 +858,7 @@ int main(int argc, char** argv)
         if (cmd == "reset-probe")
             return cmd_reset_probe(port);
         if (cmd == "reset")
-            return cmd_reset(port, password_stdin, profile);
+            return cmd_reset(port, password_stdin, use_scsi, profile);
         if (cmd == "reset-selftest")
             return cmd_reset_selftest(port);
         if (cmd == "info")
@@ -699,6 +867,10 @@ int main(int argc, char** argv)
             return cmd_format(port, fstype, label);
         if (cmd == "scsi-probe")
             return cmd_scsi_probe(port);
+        if (cmd == "scsi-unlock")
+            return cmd_scsi_unlock(port);
+        if (cmd == "scsi-reenum")
+            return cmd_scsi_reenum(port);
         if (cmd == "format-replay")
             return cmd_format_replay(port);
         if (cmd == "lock")
