@@ -7,9 +7,13 @@ Kingston only ships unlock software for Windows and macOS. This project is a
 C++ rewrite of [ironkey-unlocker](https://github.com/wltechblog/ironkey-unlocker),
 the Python tool that first made these drives usable on Linux.
 
-> This does not let anyone unlock a drive without its password, and it does
-> not exploit any weakness in the device. It only gives Linux users the same
-> legitimate access that the vendor software gives on other platforms.
+> This tool does not let anyone read the data on a lost or stolen *locked*
+> drive without its password — the at-rest encryption is unaffected. It gives
+> Linux users the same legitimate access the vendor software gives elsewhere.
+> Along the way it did surface real weaknesses in the drive's *session*
+> handshake (weak RSA and broken key generation); see
+> [Security findings](#security-findings). Those matter only to an attacker who
+> can record USB traffic while you unlock, not to one holding a locked drive.
 
 ## The original project
 
@@ -135,17 +139,27 @@ the agent's hotplug handling in `--dry-run` mode.
 
 ## Status
 
-| Phase | State |
+| Feature | State |
 |---|---|
-| 1. Protocol port, tested against the Python implementation | done |
-| 2. Hardware check of the udev `uaccess` rule (no root) | done: mode switch and handshake work as a normal user |
-| 3. Multi-device CLI | done: `list`, `unlock`, `hid-mode`, `handshake` |
-| 4. Session agent (udev monitor, password prompt, notifications) | done; hotplug verified in `--dry-run`; real unlock via agent untested |
-| 5. Debian package | todo |
-| 6. CI builds for amd64 / arm64 | todo |
+| Unlock (admin / user password) | done, hardware-verified |
+| Lock (unmount + power off, which re-locks the drive) | done, hardware-verified |
+| Multi-device (several IronKeys at once, matched by USB port) | done |
+| Session agent (auto-prompt on insert, notifications) | done; hotplug verified, agent unlock path verified |
+| Failed-login counter shown before/after unlock (admin account) | done |
+| Change password in place (`FF A6` / `FF A8`) | done, hardware-verified |
+| Reset / initialize (crypto-erase + set password) | **in progress** — the area re-key works, but setting the password needs the exact `FF A2` token, under analysis (see below) |
+| Debian package | todo |
+| CI builds for amd64 / arm64 | todo |
 
-Still not possible on Linux, as in the original: first-time setup of a new
-drive, and passphrase mode. Set the drive up with the vendor software first.
+**Reset / initialize** is the one hard remaining piece. The crypto-erase
+(re-keying the data area, `FF A2`) is validated on hardware, but afterwards the
+new password does not take: `FF A4` *verifies* instead of *setting*, because
+the `FF A2` token must encode the provisioning state and cannot simply be a
+random key. Recovering the token's real contents requires decrypting a vendor
+capture, which — thanks to the weak key generation described below — is
+actually feasible; work is ongoing. Until then, use the vendor's Windows
+"Reset Device" for factory reset. Passphrase mode (10–64 characters) is also
+not supported; only complex passwords up to 16 bytes.
 
 ## Building
 
@@ -260,35 +274,62 @@ To regenerate the test vectors (needs `python3-cryptography`, not
 python3 tools/gen_vectors.py /path/to/ironkey-unlocker/ironkey_unlock.py > tests/vectors.inc
 ```
 
-## Security note: the handshake uses RSA-512
+## Security findings
 
-This tool implements the drive's own authentication protocol faithfully,
-including a weakness worth understanding.
+Implementing the protocol faithfully meant looking closely at the drive's
+session handshake, and it has serious weaknesses. To be clear about scope
+first: **none of this breaks the drive's at-rest encryption.** A lost or
+stolen *locked* drive is still safe — there is no handshake to attack when the
+drive is locked. These weaknesses matter only to an attacker who can
+**passively record USB traffic while you unlock or set a password** (a
+compromised or untrusted host). Within that threat model, they are severe.
 
-Every unlock — and any operation that sets a password (initialize, reset,
-change password) — negotiates a session key under **ephemeral RSA-512 keys**,
-then sends your password AES-encrypted under that key. RSA-512 has been
-factorable for decades (hours on a workstation, less on cloud hardware), and
-both public moduli travel in the clear on the USB bus. So anyone who can
-**passively record the USB traffic while you unlock or set a password** can,
-with modest effort, factor the keys, recover the session key, and decrypt your
-password. The password is not in the capture in readable form, but it is
-recoverable by someone motivated — "insecure against analysis", not
-"plaintext".
+**1. The session handshake uses RSA-512.** Every unlock, and every
+password-setting operation, negotiates the 16-byte AES session key under
+ephemeral RSA-512 keys, then sends your password AES-encrypted under it. Both
+public moduli travel in the clear on the bus. RSA-512 has been factorable for
+decades, so the keys protecting the session are breakable by a motivated
+analyst.
 
-This is not introduced here; it is how the device works, and this tool cannot
-change it. The drive's real threat model is a lost or stolen *locked* drive,
-where there is no handshake to capture, so day to day this does not matter.
-But the implication is simple:
+**2. The key generation is badly broken — the keys share prime factors.**
+This is the worse one. Across the handshakes in a single captured session, the
+host's "ephemeral" RSA keys repeatedly **share prime factors** with one
+another. That is the classic weak-RNG failure (as in the 2012 *Mining your Ps
+and Qs* study): any two moduli that share a prime are factored **instantly** by
+taking their GCD — milliseconds, no number-field sieve required. In practice a
+passive observer who captures a couple of operations can recover the session
+key and decrypt the password almost for free. (The drive's own RSA key is
+fixed across sessions and did not fall to GCD; factoring it needs a real
+RSA-512 sieve, but that too is only hours of compute.)
 
-> **Unlock, reset, initialize, or change your password only on a computer you
-> trust.** If you are especially cautious, do password-setting operations on a
-> clean or throwaway system where no USB-capture tool could be running. On a
-> machine you do not control, treat any password you enter as potentially
-> exposed.
+**3. The device's session RSA key is static.** The drive presents the same
+RSA-512 public key in every handshake, so factoring it once (feasible) weakens
+every session the drive will ever negotiate.
 
-The password-setting commands (reset / initialize / change) repeat a short
-form of this warning before they run.
+Together these mean the AES-128 data encryption — which is fine — sits behind a
+session-key exchange that a USB eavesdropper can defeat. The password is not in
+a capture in readable form, but it is recoverable: "insecure against analysis",
+not safe.
+
+### What this means for you
+
+> **Unlock, change, or set your password only on a computer you trust.** On a
+> machine that might be logging USB traffic, treat any password you enter as
+> potentially exposed. Day to day, for a drive that spends its life locked in a
+> bag, this does not change the threat model — but do not type your password on
+> a kiosk or an untrusted PC.
+
+The password-setting commands repeat a short form of this warning before they
+run.
+
+### Disclosure
+
+These are findings about the vendor's firmware/software, not something this
+tool introduces, and they are being handled as responsible security research:
+the intent is to notify Kingston and allow a reasonable remediation window
+before any detailed writeup. This README describes the *class* of weakness and
+its threat model; it is not a turnkey tool for recovering other people's
+passwords, and the findings do not help anyone access a locked drive's data.
 
 ## License
 

@@ -351,6 +351,45 @@ int cmd_lock(const std::string& port)
     return 0;
 }
 
+// Diagnostic: reset with a random password, then unlock with the SAME string,
+// all programmatically. Removes human typing error from the test loop. The
+// random password is shown so the drive stays usable afterwards.
+int cmd_reset_selftest(const std::string& port)
+{
+    UsbDevice dev;
+    if (!select_device(port, dev))
+        return 1;
+    check_access(dev);
+    ensure_hid_mode(dev, print_log);
+
+    SystemRandom rng;
+    static const char charset[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    std::array<uint8_t, 12> raw{};
+    rng.fill(raw);
+    std::string pw;
+    for (uint8_t b : raw)
+        pw += charset[b % (sizeof charset - 1)];
+
+    std::printf("Self-test: resetting with generated password: %s\n", pw.c_str());
+    reset_device_full(dev, pw, print_log, /*trace=*/false);
+
+    // The drive locks after reset; pick up the new state and unlock.
+    refresh(dev);
+    ensure_hid_mode(dev, print_log);
+    Login login = choose_login(read_drive_status(dev), std::nullopt);
+    try {
+        unlock_device(dev, pw, login, print_log, /*trace=*/false);
+    } catch (const NotUnlockedError& e) {
+        std::fprintf(stderr, "SELF-TEST FAILED: %s\n", e.what());
+        return 3;
+    }
+    std::printf("SELF-TEST PASSED: reset + unlock worked. Password is: %s\n", pw.c_str());
+    for (const auto& d : dev.disks)
+        if (d.size_bytes > 0)
+            std::printf("Data disk: %s (%s)\n", d.node.c_str(), human_size(d.size_bytes).c_str());
+    return 0;
+}
+
 void usage()
 {
     std::puts(
@@ -424,6 +463,8 @@ int main(int argc, char** argv)
             return cmd_change_password(port, account, trace);
         if (cmd == "reset-probe")
             return cmd_reset_probe(port);
+        if (cmd == "reset-selftest")
+            return cmd_reset_selftest(port);
         if (cmd == "lock")
             return cmd_lock(port);
         if (cmd == "hid-mode")
