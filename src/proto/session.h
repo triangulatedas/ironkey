@@ -48,8 +48,12 @@ constexpr int kDefaultMaxFailedAttempts = 10;
 struct AreaParams {
     uint32_t data_sectors = 0;         // [0x00] size of the encrypted data area
     bool unlocked = false;             // [0x08]
-    uint8_t admin_failed_attempts = 0; // [0x0C] consecutive failed admin (index 0) logins
+    uint8_t admin_failed_attempts = 0; // [0x0C] consecutive failed logins on index 0
+    uint8_t account_flags = 0;         // [0x1F] 0x03 single password, 0x07 admin and user
     Bytes raw;
+
+    // Set up with separate admin and user passwords (bit 2 of 0x1F).
+    bool has_user_account() const { return (account_flags & 0x04) != 0; }
 };
 
 AreaParams read_area_params(Channel& ch);

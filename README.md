@@ -259,6 +259,36 @@ To regenerate the test vectors (needs `python3-cryptography`, not
 python3 tools/gen_vectors.py /path/to/ironkey-unlocker/ironkey_unlock.py > tests/vectors.inc
 ```
 
+## Security note: the handshake uses RSA-512
+
+This tool implements the drive's own authentication protocol faithfully,
+including a weakness worth understanding.
+
+Every unlock — and any operation that sets a password (initialize, reset,
+change password) — negotiates a session key under **ephemeral RSA-512 keys**,
+then sends your password AES-encrypted under that key. RSA-512 has been
+factorable for decades (hours on a workstation, less on cloud hardware), and
+both public moduli travel in the clear on the USB bus. So anyone who can
+**passively record the USB traffic while you unlock or set a password** can,
+with modest effort, factor the keys, recover the session key, and decrypt your
+password. The password is not in the capture in readable form, but it is
+recoverable by someone motivated — "insecure against analysis", not
+"plaintext".
+
+This is not introduced here; it is how the device works, and this tool cannot
+change it. The drive's real threat model is a lost or stolen *locked* drive,
+where there is no handshake to capture, so day to day this does not matter.
+But the implication is simple:
+
+> **Unlock, reset, initialize, or change your password only on a computer you
+> trust.** If you are especially cautious, do password-setting operations on a
+> clean or throwaway system where no USB-capture tool could be running. On a
+> machine you do not control, treat any password you enter as potentially
+> exposed.
+
+The password-setting commands (reset / initialize / change) repeat a short
+form of this warning before they run.
+
 ## License
 
 GPL-2.0-only, the same as the original project. See [COPYING](COPYING).

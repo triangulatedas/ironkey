@@ -150,6 +150,7 @@ AreaParams read_area_params(Channel& ch)
     p.data_sectors = p.raw[0] | p.raw[1] << 8 | p.raw[2] << 16 | uint32_t(p.raw[3]) << 24;
     p.unlocked = p.raw[0x08] != 0;
     p.admin_failed_attempts = p.raw[0x0C];
+    p.account_flags = p.raw[0x1F];
     return p;
 }
 

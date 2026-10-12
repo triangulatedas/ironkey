@@ -20,7 +20,7 @@ using namespace ironkey;
 int main(int argc, char** argv)
 {
     auto dry_run = Agent::DryRun::Off;
-    auto account = Account::Admin;
+    std::optional<Account> account;
     for (int i = 1; i < argc; ++i) {
         std::string_view arg = argv[i];
         if (arg == "--dry-run") {
@@ -29,13 +29,16 @@ int main(int argc, char** argv)
             dry_run = Agent::DryRun::Fail;
         } else if (arg == "--user") {
             account = Account::User;
+        } else if (arg == "--admin") {
+            account = Account::Admin;
         } else if (arg == "-h" || arg == "--help") {
-            std::puts("Usage: ironkey-agent [--user] [--dry-run | --dry-run=fail]\n\n"
+            std::puts("Usage: ironkey-agent [--admin | --user] [--dry-run | --dry-run=fail]\n\n"
                       "Waits for Kingston IronKey drives to be plugged in and asks for the\n"
                       "password to unlock them. Normally started by systemd as a user service.\n\n"
-                      "  --user     Log in with the user password (drives with admin and\n"
-                      "             user passwords). Default: admin, or the\n"
-                      "             only password on single-password drives.\n"
+                      "  --admin, --user\n"
+                      "             Which password to ask for on drives set up with admin\n"
+                      "             and user passwords. Default: user, as the vendor app.\n"
+                      "             Drives with a single password need neither.\n"
                       "  --dry-run  Detect drives and show the password dialog, but never\n"
                       "             switch modes or send anything to a drive.\n"
                       "  --dry-run=fail\n"
@@ -66,11 +69,11 @@ int main(int argc, char** argv)
         UdevMonitor monitor;
         Agent agent(dry_run, account);
         std::string dialog = PasswordDialog::program();
-        std::fprintf(stderr, "ironkey-agent started%s (%s login, password dialog: %s)\n",
+        std::fprintf(stderr, "ironkey-agent started%s (login: %s, password dialog: %s)\n",
                      dry_run == Agent::DryRun::Off    ? ""
                      : dry_run == Agent::DryRun::Fail ? " in DRY RUN (fail) mode"
                                                       : " in DRY RUN mode",
-                     to_string(account),
+                     account ? to_string(*account) : "by drive setup",
                      dialog.empty() ? "none found - install zenity or kdialog" : dialog.c_str());
         agent.scan();
 

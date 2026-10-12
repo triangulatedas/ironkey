@@ -4,6 +4,7 @@
 #include <atomic>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -22,7 +23,9 @@ public:
     // every unlock failed, to exercise the retry dialog.
     enum class DryRun { Off, Succeed, Fail };
 
-    explicit Agent(DryRun dry_run = DryRun::Off, Account account = Account::Admin)
+    // `account` forces admin or user login; by default it follows the drive's
+    // password setup (user on admin+user drives).
+    explicit Agent(DryRun dry_run = DryRun::Off, std::optional<Account> account = std::nullopt)
         : dry_run_(dry_run), account_(account)
     {
     }
@@ -55,10 +58,11 @@ private:
 
     void start(const std::string& port);
     void stop(const std::string& port);
-    static void run(Worker& w, const std::string& port, DryRun dry_run, Account account);
+    static void run(Worker& w, const std::string& port, DryRun dry_run,
+                    std::optional<Account> account);
 
     DryRun dry_run_;
-    Account account_;
+    std::optional<Account> account_;
     std::map<std::string, std::unique_ptr<Worker>> workers_;
 };
 

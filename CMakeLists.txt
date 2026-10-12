@@ -64,8 +64,9 @@ if(BUILD_TESTING)
         tests/main.cpp
         tests/test_vectors.cpp
         tests/test_simulated_device.cpp
+        tests/test_login.cpp
     )
-    target_link_libraries(ironkey_tests PRIVATE ironkey_proto)
+    target_link_libraries(ironkey_tests PRIVATE ironkey_linux)
     target_compile_options(ironkey_tests PRIVATE ${IRONKEY_WARNINGS})
     add_test(NAME ironkey_tests COMMAND ironkey_tests)
 endif()

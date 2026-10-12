@@ -124,7 +124,8 @@ void Agent::stop(const std::string& port)
     workers_.erase(it);
 }
 
-void Agent::run(Worker& w, const std::string& port, DryRun dry_run, Account account)
+void Agent::run(Worker& w, const std::string& port, DryRun dry_run,
+                std::optional<Account> account)
 {
     auto worker_log = [&port](const std::string& msg) { log(port, msg); };
     auto finish = [&w](State s) { w.state = s; };
@@ -150,21 +151,26 @@ void Agent::run(Worker& w, const std::string& port, DryRun dry_run, Account acco
         if (PasswordDialog::program().empty())
             throw IronKeyError("No password dialog available. Install zenity or kdialog.");
 
-        auto prompt = [&dev, account](const std::string& note) {
-            return (note.empty() ? "" : note + "\n\n") + "Enter the " + to_string(account) +
-                   " password for " + describe(dev) + ", or cancel to leave it locked.";
-        };
-
-        // Switch to HID mode before asking, so the drive's own failed-login
-        // count can be shown. A locked drive in HID mode is harmless.
-        std::string note;
+        // Switch to HID mode before asking, so the drive's password setup and
+        // failed-login count can be read. A locked drive in HID mode is
+        // harmless. A dry run never touches the drive, so it can't know them.
+        DriveStatus status;
         if (dry_run == DryRun::Off) {
             w.state = State::Switching;
             ensure_hid_mode(dev, worker_log);
-            if (auto failed = read_failed_attempts(dev, account); failed && *failed > 0) {
-                log(port, failed_attempts_warning(*failed, account));
-                note = "Warning: " + failed_attempts_warning(*failed, account) + ".";
-            }
+            status = read_drive_status(dev);
+        }
+        Login login = choose_login(status, account);
+        log(port, "Logging in with the " + login.password_name());
+
+        auto prompt = [&dev, &login](const std::string& note) {
+            return (note.empty() ? "" : note + "\n\n") + "Enter the " + login.password_name() +
+                   " for " + describe(dev) + ", or cancel to leave it locked.";
+        };
+        std::string note;
+        if (auto failed = login.failed_attempts(status); failed && *failed > 0) {
+            log(port, login.failed_warning(*failed));
+            note = "Warning: " + login.failed_warning(*failed) + ".";
         }
         std::string message = prompt(note);
 
@@ -201,7 +207,7 @@ void Agent::run(Worker& w, const std::string& port, DryRun dry_run, Account acco
                 w.state = State::Switching;
                 ensure_hid_mode(dev, worker_log);
                 w.state = State::Unlocking;
-                unlock_device(dev, *password, account, worker_log);
+                unlock_device(dev, *password, login, worker_log);
                 secure_wipe(password->data(), password->capacity());
             } catch (const NotUnlockedError& e) {
                 secure_wipe(password->data(), password->capacity());

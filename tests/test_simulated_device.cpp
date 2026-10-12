@@ -289,12 +289,18 @@ TEST(decodes_real_get_area_params_replies)
         const char* hex;
         bool unlocked;
         int failed;
+        bool has_user;
     };
     const Case cases[] = {
-        // locked, after two wrong passwords
-        {"00402f0700402f0700000000020000000000000000000000000000000000010700000043", false, 2},
-        // unlocked with the admin password
-        {"00402f0700402f07010000000000000000000000000000000000000000000107064d004f", true, 0},
+        // admin+user drive, locked, after two wrong admin passwords
+        {"00402f0700402f0700000000020000000000000000000000000000000000010700000043", false, 2,
+         true},
+        // admin+user drive, unlocked with the admin password
+        {"00402f0700402f07010000000000000000000000000000000000000000000107064d004f", true, 0,
+         true},
+        // single-password drive, locked
+        {"00402f0700402f0700000000000000000000000000000000000000000000010300000001", false, 0,
+         false},
     };
     for (const auto& c : cases) {
         class Fixed : public HidDevice {
@@ -319,5 +325,6 @@ TEST(decodes_real_get_area_params_replies)
         CHECK_EQ(p.data_sectors, 0x072F4000u);  // 61.7 GB
         CHECK_EQ(p.unlocked, c.unlocked);
         CHECK_EQ(int(p.admin_failed_attempts), c.failed);
+        CHECK_EQ(p.has_user_account(), c.has_user);
     }
 }

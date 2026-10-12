@@ -50,8 +50,8 @@ void ensure_hid_mode(UsbDevice& dev, const Log& log)
     log("HID mode: " + dev.hidraw.front());
 }
 
-void unlock_device(UsbDevice& dev, std::string_view password, Account account, const Log& log,
-                   bool trace)
+void unlock_device(UsbDevice& dev, std::string_view password, const Login& login,
+                   const Log& log, bool trace)
 {
     if (password.size() > kMaxPasswordBytes)
         throw UnlockError("Password longer than 16 bytes. Passphrase mode (10-64 characters) "
@@ -62,14 +62,14 @@ void unlock_device(UsbDevice& dev, std::string_view password, Account account, c
     try {
         HidrawDevice hid(dev.hidraw.front());
         TracingHidDevice traced(hid, log);
-        unlock(trace ? static_cast<HidDevice&>(traced) : hid, password, account);
+        unlock(trace ? static_cast<HidDevice&>(traced) : hid, password, login.account);
     } catch (const WrongPasswordError&) {
-        auto failed = read_failed_attempts(dev, account);
-        std::string msg = std::string("Wrong ") + to_string(account) + " password";
+        auto failed = login.failed_attempts(read_drive_status(dev));
+        std::string msg = "Wrong " + login.password_name();
         if (failed)
-            msg += " (" + failed_attempts_warning(*failed, account) + ")";
+            msg += " (" + login.failed_warning(*failed) + ")";
         else
-            msg += ". " + lockout_consequence(account);
+            msg += ". " + login.lockout_consequence();
         throw NotUnlockedError(msg, true, failed);
     }
 
@@ -85,22 +85,31 @@ void unlock_device(UsbDevice& dev, std::string_view password, Account account, c
     }
 }
 
-std::optional<int> read_failed_attempts(const UsbDevice& dev, Account account)
+DriveStatus read_drive_status(const UsbDevice& dev)
 {
-    // Only the admin counter's location is known so far (PROTOCOL.md).
-    if (account != Account::Admin || !dev.in_hid_mode())
-        return std::nullopt;
+    DriveStatus status;
+    if (!dev.in_hid_mode())
+        return status;
     try {
         HidrawDevice hid(dev.hidraw.front());
         Channel ch(hid);
         ch.drain();
-        return read_area_params(ch).admin_failed_attempts;
+        AreaParams p = read_area_params(ch);
+        status.setup = p.has_user_account() ? PasswordSetup::AdminAndUser : PasswordSetup::Single;
+        status.admin_failed_attempts = p.admin_failed_attempts;
     } catch (const std::exception&) {
-        return std::nullopt;
     }
+    return status;
 }
 
-std::string lockout_consequence(Account account)
+std::string Login::password_name() const
+{
+    if (account == Account::User)
+        return "user password";
+    return setup == PasswordSetup::Single ? "password" : "admin password";
+}
+
+std::string Login::lockout_consequence() const
 {
     std::string n = std::to_string(kDefaultMaxFailedAttempts);
     if (account == Account::User)
@@ -109,17 +118,43 @@ std::string lockout_consequence(Account account)
     return "The drive erases itself after " + n + " failed attempts in a row";
 }
 
-std::string failed_attempts_warning(int failed, Account account)
+std::optional<int> Login::failed_attempts(const DriveStatus& status) const
+{
+    // Only the index 0 counter's location is known (PROTOCOL.md).
+    return account == Account::Admin ? status.admin_failed_attempts : std::nullopt;
+}
+
+std::string Login::failed_warning(int failed) const
 {
     if (failed <= 0)
         return {};
     int left = std::max(kDefaultMaxFailedAttempts - failed, 0);
-    return std::to_string(failed) + " failed " + to_string(account) +
-           (failed == 1 ? " login" : " logins") + " since the last successful one; " +
-           std::to_string(left) + " left before " +
+    std::string who = setup == PasswordSetup::Single ? "" : std::string(to_string(account)) + " ";
+    return std::to_string(failed) + " failed " + who + (failed == 1 ? "login" : "logins") +
+           " since the last successful one; " + std::to_string(left) + " left before " +
            (account == Account::User ? "user login locks" : "the drive erases itself") +
            " (default limit " + std::to_string(kDefaultMaxFailedAttempts) + ")";
 }
+
+Login choose_login(const DriveStatus& status, std::optional<Account> requested)
+{
+    if (requested == Account::User && status.setup == PasswordSetup::Single)
+        throw IronKeyError("This drive has only one password; it has no separate user account. "
+                           "Unlock without --user");
+    Login login;
+    login.setup = status.setup;
+    if (requested)
+        login.account = *requested;
+    else
+        login.account = status.setup == PasswordSetup::AdminAndUser ? Account::User
+                                                                    : Account::Admin;
+    return login;
+}
+
+const char* const kUntrustedHostWarning =
+    "Security: this drive's login uses RSA-512, which is weak. On a computer you\n"
+    "do not trust, a program recording USB traffic could later recover the\n"
+    "password you set here. Only do this on a machine you trust.";
 
 bool lock_device(UsbDevice& dev, const Log& log)
 {

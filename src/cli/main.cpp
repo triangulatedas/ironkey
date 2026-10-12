@@ -4,7 +4,9 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include <cctype>
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -203,7 +205,8 @@ int cmd_dump(const std::string& port, bool with_session)
     return 0;
 }
 
-int cmd_unlock(const std::string& port, Account account, bool password_stdin, bool trace)
+int cmd_unlock(const std::string& port, std::optional<Account> requested, bool password_stdin,
+               bool trace)
 {
     UsbDevice dev;
     if (!select_device(port, dev))
@@ -214,18 +217,25 @@ int cmd_unlock(const std::string& port, Account account, bool password_stdin, bo
     }
     check_access(dev);
 
-    // Switch first so the failed-attempt count can be shown before the prompt.
-    // A locked drive in HID mode is harmless; replugging returns it to normal.
+    // Switch first so the password setup and failed-attempt count can be read
+    // before the prompt. A locked drive in HID mode is harmless; replugging
+    // returns it to normal.
     ensure_hid_mode(dev, print_log);
-    if (auto failed = read_failed_attempts(dev, account); failed && *failed > 0)
-        std::fprintf(stderr, "Warning: %s.\n", failed_attempts_warning(*failed, account).c_str());
+    DriveStatus status = read_drive_status(dev);
+    Login login = choose_login(status, requested);
+    if (status.setup == PasswordSetup::AdminAndUser)
+        print_log(std::string("Drive has admin and user passwords; logging in with the ") +
+                  login.password_name() +
+                  (requested ? "" : login.account == Account::User ? " (use --admin for the admin)"
+                                                                   : ""));
+    if (auto failed = login.failed_attempts(status); failed && *failed > 0)
+        std::fprintf(stderr, "Warning: %s.\n", login.failed_warning(*failed).c_str());
 
     Password pw;
+    std::string name = login.password_name();
+    name[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
     bool ok = password_stdin ? read_password_stdin(pw)
-                             : read_password_tty(std::string(account == Account::User ? "User"
-                                                                                          : "Admin") +
-                                                     " password for " + describe(dev) + ": ",
-                                                 pw);
+                             : read_password_tty(name + " for " + describe(dev) + ": ", pw);
     if (!ok || pw.value.empty()) {
         std::fprintf(stderr, "No password given.\n");
         return 1;
@@ -237,7 +247,7 @@ int cmd_unlock(const std::string& port, Account account, bool password_stdin, bo
     }
 
     try {
-        unlock_device(dev, pw.value, account, print_log, trace);
+        unlock_device(dev, pw.value, login, print_log, trace);
     } catch (const NotUnlockedError& e) {
         std::fprintf(stderr, "%s.\n", e.what());
         return 3;
@@ -285,10 +295,9 @@ void usage()
         "  list                       Show connected Kingston devices (default)\n"
         "  unlock [--admin | --user] [--password-stdin] [--trace]\n"
         "                             Unlock a drive; prompts for the password.\n"
-        "                             --admin (default): the admin password, or the only\n"
-        "                               password on single-password drives\n"
-        "                             --user: the user password on drives with admin and\n"
-        "                               user passwords\n"
+        "                             Drives with admin and user passwords log in with\n"
+        "                             the user password unless --admin is given. Drives\n"
+        "                             with a single password need neither option.\n"
         "                             --trace logs every HID exchange (secrets redacted)\n"
         "  lock                       Unmount and power off an unlocked drive, which\n"
         "                             locks it (same as Eject in a file manager)\n"
@@ -309,7 +318,7 @@ int main(int argc, char** argv)
     std::string port;
     bool password_stdin = false;
     bool trace = false;
-    Account account = Account::Admin;
+    std::optional<Account> account;  // chosen from the drive's setup unless given
     bool with_session = true;
     for (int i = 2; i < argc; ++i) {
         std::string_view arg = argv[i];
