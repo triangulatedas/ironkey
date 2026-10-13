@@ -41,7 +41,15 @@ cd ~/docker/apt && docker compose up -d --build
 
 # 5. Add a Cloudflare Public Hostname (Zero Trust dashboard, token tunnel):
 #      apt.trisec.no  ->  http://ironkey-apt:80
+
+# 6. IMPORTANT — stop Cloudflare caching the repo, or apt will hit
+#    "File has unexpected size" after each publish (a cached-but-stale index).
+#    Caching -> Cache Rules -> Create:
+#      If  hostname equals apt.trisec.no  ->  Cache eligibility: Bypass cache
+#    (nginx also marks dists/ no-store, but the CDN rule is the reliable fix.)
 ```
+
+After changing `nginx.conf`, reload it: `docker compose restart apt`.
 
 The updater builds the repo within a minute of first start (watch it with
 `docker compose logs -f updater`). Verify from the server:
