@@ -4,9 +4,11 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <thread>
 
 #include "linux/hidraw_device.h"
+#include "linux/scsi_transport.h"
 #include "linux/usbfs.h"
 #include "linux/volumes.h"
 #include "proto/session.h"
@@ -21,7 +23,65 @@ bool can_open(const std::string& node)
     return ::access(node.c_str(), R_OK | W_OK) == 0;
 }
 
+// Opens a non-disruptive read channel to the drive and runs `fn(ch)`: over HID
+// when the drive is already in HID mode, else over the SCSI helper when it is in
+// normal storage mode. Never switches a locked drive to HID. Returns true only
+// if a channel was available and `fn` ran to completion without throwing.
+template <class Fn>
+bool on_read_channel(const UsbDevice& dev, Fn&& fn)
+{
+    try {
+        if (dev.in_hid_mode()) {
+            HidrawDevice hid(dev.hidraw.front());
+            Channel ch(hid);
+            ch.drain();
+            fn(ch);
+            return true;
+        }
+        if (!dev.disks.empty()) {
+            ScsiTransport st(find_scsi_helper(), dev.disks.front().node);
+            Channel ch(st);
+            ch.drain();
+            fn(ch);
+            return true;
+        }
+    } catch (const std::exception&) {
+    }
+    return false;
+}
+
 }  // namespace
+
+std::string find_scsi_helper()
+{
+    if (const char* e = std::getenv("IRONKEY_SCSI_HELPER"))
+        return e;
+    char buf[4096];
+    ssize_t n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        std::string p(buf);
+        auto slash = p.rfind('/');
+        if (slash != std::string::npos)
+            return p.substr(0, slash + 1) + "ironkey-scsi-helper";
+    }
+    return "ironkey-scsi-helper";
+}
+
+bool scsi_usable(const UsbDevice& dev)
+{
+    if (dev.disks.empty())
+        return false;
+    try {
+        ScsiTransport st(find_scsi_helper(), dev.disks.front().node);
+        Channel ch(st);
+        ch.drain();
+        read_area_params(ch);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
 
 void check_access(const UsbDevice& dev)
 {
@@ -177,18 +237,33 @@ void change_password_device(UsbDevice& dev, std::string_view old_password,
 DriveStatus read_drive_status(const UsbDevice& dev)
 {
     DriveStatus status;
-    if (!dev.in_hid_mode())
-        return status;
-    try {
-        HidrawDevice hid(dev.hidraw.front());
-        Channel ch(hid);
-        ch.drain();
+    on_read_channel(dev, [&](Channel& ch) {
         AreaParams p = read_area_params(ch);
         status.setup = p.has_user_account() ? PasswordSetup::AdminAndUser : PasswordSetup::Single;
         status.admin_failed_attempts = p.admin_failed_attempts;
-    } catch (const std::exception&) {
-    }
+    });
     return status;
+}
+
+DeviceSummary read_device_summary(const UsbDevice& dev)
+{
+    DeviceSummary s;
+    s.name = describe(dev);
+    s.unlocked = dev.is_unlocked();
+    on_read_channel(dev, [&](Channel& ch) {
+        AreaParams p = read_area_params(ch);
+        s.setup = p.has_user_account() ? PasswordSetup::AdminAndUser : PasswordSetup::Single;
+        s.admin_failed_attempts = p.admin_failed_attempts;
+        s.status_read = true;
+        // The owner-set name is a nice-to-have for telling drives apart; a
+        // failure to read it (e.g. the profile session over SCSI) must not lose
+        // the status we already have, so swallow it separately.
+        try {
+            s.owner_name = read_profile(ch).name;
+        } catch (const std::exception&) {
+        }
+    });
+    return s;
 }
 
 std::string Login::password_name() const

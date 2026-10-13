@@ -161,6 +161,7 @@ the agent's hotplug handling in `--dry-run` mode.
 | Multi-device (several IronKeys at once, matched by USB port) | done |
 | Session agent (auto-prompt on insert, notifications) | done; hotplug verified, agent unlock path verified |
 | Failed-login counter shown before/after unlock (admin account) | done |
+| Non-disruptive status read (setup, failed count, name; `status`) | done, hardware-verified |
 | Change password in place (`FF A6` / `FF A8`) | done, hardware-verified |
 | Reset / forgot-password (crypto-erase + set new password) | done, hardware-verified |
 | Provision admin + user accounts (`reset --admin-user`) | done, hardware-verified |

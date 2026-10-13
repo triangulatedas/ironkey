@@ -157,10 +157,18 @@ run operations on the existing per-port worker model.
 
 1. **Refactor** — extract `find_scsi_helper` / `scsi_usable` / `reset_device_auto`
    / `reenumerate` into `device_ops`; CLI unchanged. (Small, low-risk.)
+   *Partly done:* `find_scsi_helper` and `scsi_usable` now live in `device_ops`
+   (the CLI calls them via `using namespace ironkey`); `reset_device_auto` /
+   `reenumerate` are still inline in the CLI.
 2. **Tray shell** — SNI + DBusMenu over sd-bus; a static menu that lists drives
    and does Unlock/Lock via the existing worker. Validate on the target desktop.
 3. **Status & hint** — failed-count line and on-click hint, read over SCSI when
-   available.
+   available. *Done (non-UI part):* `read_device_summary()` in `device_ops`
+   reads setup (admin-only / admin+user), the admin failed-login count, lock
+   state and the owner name in a single non-disruptive pass (SCSI when the drive
+   is locked in storage mode, HID only when already in HID mode; never switches a
+   locked drive to HID). Surfaced as `ironkey-unlock status` and used by the
+   agent before it prompts. The on-click hint still needs the UI.
 4. **Wizard** — single-password setup + owner info + optional format.
 5. **Admin/user** — login account choice now; user-account *provisioning* done
    (`reset --admin-user` / `reset_device(ch, admin, user)`), so the wizard just

@@ -63,8 +63,38 @@ struct DriveStatus {
     std::optional<int> admin_failed_attempts;  // index 0; the user counter is not known
 };
 
-// Returns an Unknown status if the drive is not in HID mode or can't be read.
+// Reads the drive's pre-login status (GetAreaParams) without disrupting it:
+// over the SCSI helper when the drive is locked in normal storage mode, or over
+// HID when it is already in HID mode. Never switches a locked drive to HID.
+// Returns an Unknown status if neither read is possible.
 DriveStatus read_drive_status(const UsbDevice& dev);
+
+// Locates the setcap'd SCSI helper: $IRONKEY_SCSI_HELPER, else next to this
+// executable, else "ironkey-scsi-helper" on PATH.
+std::string find_scsi_helper();
+
+// True if the replug-free SCSI path can be used right now: the drive is in
+// normal storage mode and a harmless FF A0 read succeeds through the helper (so
+// the helper exists, is setcap'd, and can reach the device).
+bool scsi_usable(const UsbDevice& dev);
+
+// A one-glance description of a device for the agent/tray: enough to tell it
+// apart from other connected drives and to decide how to log in, gathered in a
+// single non-disruptive pass (see read_device_summary).
+struct DeviceSummary {
+    std::string name;        // describe(dev): product + S/N + port (always set)
+    std::string owner_name;  // owner-profile name if set and readable, else ""
+    PasswordSetup setup = PasswordSetup::Unknown;
+    std::optional<int> admin_failed_attempts;  // index 0; user counter not exposed
+    bool unlocked = false;
+    bool status_read = false;  // true if GetAreaParams was actually read
+};
+
+// Reads a DeviceSummary without disrupting a locked drive (SCSI when locked in
+// storage mode, HID when already in HID mode; never switches a locked drive to
+// HID). `name` and `unlocked` are always filled from the USB topology; the rest
+// is best-effort and left at its default when it cannot be read.
+DeviceSummary read_device_summary(const UsbDevice& dev);
 
 // The account to log in with and how to talk about it.
 struct Login {

@@ -147,41 +147,8 @@ int cmd_hid_mode(const std::string& port)
     return 0;
 }
 
-// Locates the setcap'd SCSI helper: $IRONKEY_SCSI_HELPER, else next to this
-// executable, else on PATH.
-std::string find_scsi_helper()
-{
-    if (const char* e = std::getenv("IRONKEY_SCSI_HELPER"))
-        return e;
-    char buf[4096];
-    ssize_t n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
-    if (n > 0) {
-        buf[n] = '\0';
-        std::string p(buf);
-        auto slash = p.rfind('/');
-        if (slash != std::string::npos)
-            return p.substr(0, slash + 1) + "ironkey-scsi-helper";
-    }
-    return "ironkey-scsi-helper";
-}
-
-// True if the replug-free SCSI path can be used right now: the drive is in
-// normal storage mode and a harmless FF A0 read actually succeeds through the
-// helper (so the helper exists, is setcap'd, and can reach the device).
-bool scsi_usable(const UsbDevice& dev)
-{
-    if (dev.disks.empty())
-        return false;
-    try {
-        ScsiTransport st(find_scsi_helper(), dev.disks.front().node);
-        Channel ch(st);
-        ch.drain();
-        read_area_params(ch);
-        return true;
-    } catch (const std::exception&) {
-        return false;
-    }
-}
+// find_scsi_helper() and scsi_usable() now live in device_ops (shared with the
+// agent); `using namespace ironkey` resolves the calls below to them.
 
 // Diagnostic: read GetAreaParams (FF A0) over the SCSI/SG_IO path (via the
 // helper) to validate the transport. The drive must be in normal storage mode.
@@ -614,6 +581,32 @@ int cmd_info(const std::string& port)
     return 0;
 }
 
+// Non-disruptive at-a-glance summary: name, lock state, account setup, and the
+// admin failed-login count. Reads over the SCSI helper when the drive is locked
+// in storage mode, so it never switches a locked drive to HID.
+int cmd_status(const std::string& port)
+{
+    UsbDevice dev;
+    if (!select_device(port, dev))
+        return 1;
+    DeviceSummary s = read_device_summary(dev);
+    std::printf("%s\n", s.name.c_str());
+    if (!s.owner_name.empty())
+        std::printf("  Owner name:    %s\n", s.owner_name.c_str());
+    std::printf("  State:         %s\n", s.unlocked ? "unlocked" : "locked");
+    const char* setup = s.setup == PasswordSetup::AdminAndUser ? "admin + user"
+                        : s.setup == PasswordSetup::Single      ? "single password"
+                                                                : "unknown";
+    std::printf("  Accounts:      %s\n", setup);
+    if (s.admin_failed_attempts)
+        std::printf("  Failed logins: %d of %d (admin; resets on a successful unlock)\n",
+                    *s.admin_failed_attempts, kDefaultMaxFailedAttempts);
+    if (!s.status_read)
+        std::printf("  (Could not read the drive's setup without disruption — install the SCSI "
+                    "helper, or use 'dump', which switches to HID mode.)\n");
+    return 0;
+}
+
 // Experimental: send FF 01 (NTU_Detach_Attach) over SCSI to make the drive
 // re-enumerate itself — an automatic "soft replug" after a reset. The three
 // flags (Detach, Attach, Reboot) come from $IRONKEY_DAR (default "1,1,0") while
@@ -829,6 +822,8 @@ void usage()
         "                             user; with --password-stdin, one per line). Uses the\n"
         "                             replug-free SCSI path automatically when the helper is\n"
         "                             installed, else HID (replug after). --scsi/--hid force it.\n"
+        "  status                     Show a drive's setup (admin-only or admin+user), failed-\n"
+        "                             login count and name, without unlocking or disruption\n"
         "  info                       Show owner info (name/company/hint) without unlocking\n"
         "  format [--fs vfat|exfat|ext4] [--label NAME]\n"
         "                             Create a filesystem on an unlocked drive's data disk\n"
@@ -925,6 +920,8 @@ int main(int argc, char** argv)
             return cmd_reset_selftest(port);
         if (cmd == "info")
             return cmd_info(port);
+        if (cmd == "status")
+            return cmd_status(port);
         if (cmd == "format")
             return cmd_format(port, fstype, label);
         if (cmd == "scsi-probe")

@@ -151,21 +151,33 @@ void Agent::run(Worker& w, const std::string& port, DryRun dry_run,
         if (PasswordDialog::program().empty())
             throw IronKeyError("No password dialog available. Install zenity or kdialog.");
 
-        // Switch to HID mode before asking, so the drive's password setup and
-        // failed-login count can be read. A locked drive in HID mode is
-        // harmless. A dry run never touches the drive, so it can't know them.
+        // Read the drive's setup and failed-login count without disrupting it
+        // (over SCSI when it is locked in storage mode); switching to HID mode is
+        // deferred until the user actually submits a password. A dry run never
+        // touches the drive, so it leaves these unknown. If no non-disruptive
+        // read is possible (no SCSI helper), fall back to HID to stay reliable.
         DriveStatus status;
+        DeviceSummary summary;
         if (dry_run == DryRun::Off) {
-            w.state = State::Switching;
-            ensure_hid_mode(dev, worker_log);
-            status = read_drive_status(dev);
+            summary = read_device_summary(dev);
+            if (summary.status_read) {
+                status.setup = summary.setup;
+                status.admin_failed_attempts = summary.admin_failed_attempts;
+            } else {
+                w.state = State::Switching;
+                ensure_hid_mode(dev, worker_log);
+                status = read_drive_status(dev);
+            }
         }
         Login login = choose_login(status, account);
         log(port, "Logging in with the " + login.password_name());
 
-        auto prompt = [&dev, &login](const std::string& note) {
+        std::string device_label = summary.owner_name.empty()
+                                       ? describe(dev)
+                                       : summary.owner_name + " — " + describe(dev);
+        auto prompt = [&login, &device_label](const std::string& note) {
             return (note.empty() ? "" : note + "\n\n") + "Enter the " + login.password_name() +
-                   " for " + describe(dev) + ", or cancel to leave it locked.";
+                   " for " + device_label + ", or cancel to leave it locked.";
         };
         std::string note;
         if (auto failed = login.failed_attempts(status); failed && *failed > 0) {
