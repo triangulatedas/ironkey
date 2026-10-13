@@ -34,24 +34,15 @@ Key128 encrypt_login(const Key128& shared, std::string_view password)
     return enc;
 }
 
-// FF A2 set token: 16 bytes for a complex password (<= 16 chars), or 32 bytes
-// for a passphrase (the first 32 chars, zero-padded, as two ECB blocks). The
-// device stores this and infers the password mode from the length.
+// FF A2 set token for one account: 16 bytes = the first 16 characters of the
+// password, AES-encrypted (one ECB block). The device infers the number of
+// accounts from the payload length ((len-4)/16), so this MUST stay 16 bytes for
+// a single account — a 32-byte token is read as two accounts (see PROTOCOL.md).
+// A passphrase is therefore verified on its first 16 characters, like a login.
 Bytes make_set_token(const Key128& shared, std::string_view password)
 {
-    std::array<uint8_t, 16> b0{}, b1{};
-    std::copy_n(password.begin(), std::min<size_t>(password.size(), 16), b0.begin());
-    Key128 e0 = aes128_ecb_encrypt(shared, b0);
-    secure_wipe(b0.data(), b0.size());
-    Bytes out(e0.begin(), e0.end());
-    if (password.size() > kMaxPasswordBytes) {
-        size_t n = std::min<size_t>(password.size() - 16, 16);
-        std::copy_n(password.begin() + 16, n, b1.begin());
-        Key128 e1 = aes128_ecb_encrypt(shared, b1);
-        secure_wipe(b1.data(), b1.size());
-        out.insert(out.end(), e1.begin(), e1.end());
-    }
-    return out;
+    Key128 t = encrypt_login(shared, password);
+    return Bytes(t.begin(), t.end());
 }
 
 }  // namespace

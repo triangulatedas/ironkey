@@ -183,9 +183,12 @@ geometry. The drive applies the new layout on a **power cycle**. Over the
 default HID path that means one physical unplug/replug after `reset`; with the
 SCSI path (below) it is done in software, so the whole flow is hands-off.
 
-**Passphrase mode** — passwords may be up to 64 characters. The device stores
-the first 32 characters and, at login, verifies the first 16 (one AES block);
-no hashing is involved. `unlock`, `reset` and `change-password` accept them.
+**Passphrase mode** — passwords may be up to 64 characters, but the device is
+verified on the **first 16 characters** only (one AES block; no hashing): the
+set token and the login block are both `enc(password[0:16])`. Longer input is
+accepted and truncated to 16 for the cryptographic check. (The set token must
+stay 16 bytes for one account — the device reads a 32-byte token as *two*
+accounts, inferring the count from the payload length.)
 
 **Owner info** — the drive stores a contact profile (name, company,
 description, and the admin/user password *hints*) in its protected hidden area,
