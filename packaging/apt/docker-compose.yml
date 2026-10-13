@@ -13,7 +13,7 @@ name: ironkey-apt
 # Prerequisites on the host (see README.md):
 #   docker network create aptnet
 #   # add `aptnet` (external) to dawn_cloudflared's networks and recreate it
-#   # add a Cloudflare Public Hostname: apt.trisec.no -> http://ironkey-apt:80
+#   # add a Cloudflare Public Hostname: repo.trisec.no -> http://ironkey-apt:80
 
 x-logging: &default-logging
   driver: json-file

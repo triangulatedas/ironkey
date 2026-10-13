@@ -32,9 +32,9 @@ findings are described below and in the commit history).
 ### APT repository (recommended, Debian/Ubuntu)
 
 ```bash
-curl -fsSL https://apt.trisec.no/ironkey-archive-keyring.gpg \
+curl -fsSL https://repo.trisec.no/ironkey-archive-keyring.gpg \
   | sudo tee /usr/share/keyrings/ironkey.gpg >/dev/null
-echo "deb [signed-by=/usr/share/keyrings/ironkey.gpg] https://apt.trisec.no stable main" \
+echo "deb [signed-by=/usr/share/keyrings/ironkey.gpg] https://repo.trisec.no stable main" \
   | sudo tee /etc/apt/sources.list.d/ironkey.list
 sudo apt update && sudo apt install ironkey      # desktop: also pulls ironkey-gui
 ```

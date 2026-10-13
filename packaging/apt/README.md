@@ -1,4 +1,4 @@
-# Self-hosted APT repository (apt.trisec.no)
+# Self-hosted APT repository (repo.trisec.no)
 
 Serves the `ironkey` / `ironkey-gui` `.deb`s so users can
 `apt install ironkey`. Runs as a small Docker stack behind the existing
@@ -40,12 +40,12 @@ docker network create aptnet
 cd ~/docker/apt && docker compose up -d --build
 
 # 5. Add a Cloudflare Public Hostname (Zero Trust dashboard, token tunnel):
-#      apt.trisec.no  ->  http://ironkey-apt:80
+#      repo.trisec.no  ->  http://ironkey-apt:80
 
 # 6. IMPORTANT — stop Cloudflare caching the repo, or apt will hit
 #    "File has unexpected size" after each publish (a cached-but-stale index).
 #    Caching -> Cache Rules -> Create:
-#      If  hostname equals apt.trisec.no  ->  Cache eligibility: Bypass cache
+#      If  hostname equals repo.trisec.no  ->  Cache eligibility: Bypass cache
 #    (nginx also marks dists/ no-store, but the CDN rule is the reliable fix.)
 ```
 
@@ -54,14 +54,14 @@ After changing `nginx.conf`, reload it: `docker compose restart apt`.
 The updater builds the repo within a minute of first start (watch it with
 `docker compose logs -f updater`). Verify from the server:
 `curl -fsSL http://localhost  # via the container` or, once the hostname is live,
-`curl -fsSL https://apt.trisec.no/dists/stable/Release`.
+`curl -fsSL https://repo.trisec.no/dists/stable/Release`.
 
 ## What users run
 
 ```sh
-curl -fsSL https://apt.trisec.no/ironkey-archive-keyring.gpg \
+curl -fsSL https://repo.trisec.no/ironkey-archive-keyring.gpg \
   | sudo tee /usr/share/keyrings/ironkey.gpg >/dev/null
-echo "deb [signed-by=/usr/share/keyrings/ironkey.gpg] https://apt.trisec.no stable main" \
+echo "deb [signed-by=/usr/share/keyrings/ironkey.gpg] https://repo.trisec.no stable main" \
   | sudo tee /etc/apt/sources.list.d/ironkey.list
 sudo apt update && sudo apt install ironkey      # desktop: pulls ironkey-gui via Recommends
 # console-only: sudo apt install --no-install-recommends ironkey
