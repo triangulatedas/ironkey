@@ -226,8 +226,13 @@ run operations on the existing per-port worker model.
    and `reenumerate` now live in `device_ops`; `cmd_reset` is a thin caller that
    keeps only the UI (prompts + next-steps text). The agent/tray reuse the same
    reset flow via `reset_device_auto(dev, admin, user, profile, prefer, log)`.
-2. **Tray shell** — SNI + DBusMenu over sd-bus; a static menu that lists drives
-   and does Unlock/Lock via the existing worker. Validate on the target desktop.
+2. **Tray shell — done.** `Tray` (`src/agent/tray.{h,cpp}`) exports the SNI +
+   dbusmenu over sd-bus and registers with the watcher; the menu lists each drive
+   with an Unlock/Lock action plus Quit, Unlock going through
+   `Agent::request_unlock`. Shares the agent's `poll()` loop; headless fallback if
+   no bus/watcher. Verified on GNOME via busctl (registration, properties, layout,
+   and a click dispatching an action). Visual confirmation on the live top-bar
+   pending.
 3. **Status & hint** — failed-count line and on-click hint, read over SCSI when
    available. *Done (non-UI part):* `read_device_summary()` in `device_ops`
    reads setup (admin-only / admin+user), the admin failed-login count, lock
