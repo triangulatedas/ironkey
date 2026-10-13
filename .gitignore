@@ -1,3 +1,7 @@
 build*/
 __pycache__/
 device_dumps/
+
+# Local secrets / fetched configs — never commit
+.env
+config.tgz
