@@ -8,13 +8,16 @@ inspired by
 [ironkey-unlocker](https://github.com/wltechblog/ironkey-unlocker), the Python
 tool that first made these drives *unlockable* on Linux. It started as a C++ port
 of that unlock and has since grown into a much broader, largely independent
-management tool: forgot-password reset, passphrase mode, admin + user account
-provisioning, owner-info read/write, filesystem creation, a non-disruptive status
-read, a desktop session agent, and an optional replug-free SCSI path. Only the
-unlock path is shared with the original; everything else was reverse-engineered
-separately for this project (unlock's byte-level protocol is in
-[PROTOCOL.md](PROTOCOL.md); the newer findings are described below and in the
-commit history).
+management tool at feature parity with the vendor's Windows/macOS apps for
+everyday use: forgot-password reset, change password, admin reset of a user
+password, admin + user account provisioning, passphrase mode, owner-info
+read/write, and filesystem creation — with a CLI, a desktop session agent, a
+**system-tray icon and a GTK setup wizard**, and Linux-native extras the vendor
+apps lack (a replug-free SCSI path, a non-disruptive status read, multi-drive
+handling, and a zero-root design). Only the unlock path is shared with the
+original; everything else was reverse-engineered separately for this project
+(unlock's byte-level protocol is in [PROTOCOL.md](PROTOCOL.md); the newer
+findings are described below and in the commit history).
 
 > This tool does not let anyone read the data on a lost or stolen *locked*
 > drive without its password — the at-rest encryption is unaffected. It gives
@@ -64,9 +67,10 @@ reverse-engineered separately and is documented in PROTOCOL.md and the commits.
 
 | Original | This version |
 |---|---|
-| Run by hand with `sudo python3 ironkey_unlock.py` | A session agent notices the drive being plugged in and asks for the password |
+| Run by hand with `sudo python3 ironkey_unlock.py` | A session agent with a system-tray icon and GTK wizard notices the drive and offers unlock/manage |
+| Only unlock | Full management: reset, change/reset-user password, admin+user setup, passphrases, owner info, format |
 | Assumes exactly one IronKey is connected | Handles several IronKeys at once, each tracked separately |
-| Needs Python 3 and `pycryptodome` | Compiled C++20 binaries, depending only on OpenSSL, libudev and libsystemd |
+| Needs Python 3 and `pycryptodome` | Compiled C++20 binaries; core depends only on OpenSSL, libudev and libsystemd (GTK optional) |
 | Needs root | Runs as the logged-in user, through a udev `uaccess` rule |
 | Copy the script and install dependencies | Debian package *(planned)* |
 
@@ -153,12 +157,25 @@ second test runs the full exchange against a simulated device that performs
 the device side of the protocol with real RSA keys, including a
 wrong-password case.
 
-On real hardware (Locker+50G2), the following have been verified running as
-a normal user: the mode switch, the RSA handshake, a full unlock with the
-admin password, wrong-password detection with the failed-login counter, and
-the agent's hotplug handling in `--dry-run` mode.
+On real hardware (Locker+50G2), the following have been verified running as a
+normal user: the mode switch and RSA handshake; unlock with admin, user and
+passphrase; wrong-password detection with the failed-login counter; forgot-
+password reset (over both HID and the replug-free SCSI path); admin + user
+provisioning with both accounts unlocking; passphrase derivation matching the
+vendor app; the non-disruptive `status` read; `format`; and the tray icon +
+GTK setup/unlock dialogs on GNOME. The admin *reset-user-password* and the
+`USBtoCloudInstallDeclined.txt` marker are implemented but not yet
+hardware-verified.
 
 ## Status
+
+This project now covers the everyday drive management the vendor's Windows and
+macOS apps do — unlock, lock, forgot-password reset, change password, admin
+reset of a user password, admin + user setup, passphrases, owner info and
+formatting — **plus** Linux-native extras the vendor apps don't have (a
+replug-free SCSI path, a non-disruptive status read, multi-drive handling by USB
+port, and a zero-root unprivileged design). It runs headless from the CLI or as a
+desktop session agent with a system-tray icon and a GTK wizard.
 
 | Feature | State |
 |---|---|
@@ -166,17 +183,24 @@ the agent's hotplug handling in `--dry-run` mode.
 | Lock (unmount + power off, which re-locks the drive) | done, hardware-verified |
 | Multi-device (several IronKeys at once, matched by USB port) | done |
 | Session agent (auto-prompt on insert, notifications) | done; hotplug verified, agent unlock path verified |
+| System-tray icon + GTK dialogs & setup wizard (`ironkey-gui`) | done, verified on GNOME |
 | Failed-login counter shown before/after unlock (admin account) | done |
 | Non-disruptive status read (setup, failed count, name; `status`) | done, hardware-verified |
 | Change password in place (`FF A6` / `FF A8`) | done, hardware-verified |
+| Admin resets the user password (no old password, no data loss) | done; not yet hardware-verified |
 | Reset / forgot-password (crypto-erase + set new password) | done, hardware-verified |
 | Provision admin + user accounts (`reset --admin-user`) | done, hardware-verified |
 | Passphrase mode (up to 64 characters) | done, hardware-verified |
 | Owner info — read & write name / company / hints (`info`, `reset --…`) | done, hardware-verified |
 | Create a filesystem on the data disk (`format`, vfat/exfat/ext4) | done, hardware-verified |
+| Drop `USBtoCloudInstallDeclined.txt` on format (silences the Windows nag) | done; not yet hardware-verified |
 | SCSI transport + replug-free reset (privileged helper) | done, hardware-verified |
 | Debian package | todo |
 | CI builds for amd64 / arm64 | todo |
+
+Not implemented: the **one-time recovery password** — the vendor's own client for
+this model doesn't expose it either (it targets the IronKey "Privacy" line), so
+it's an untested, undocumented maybe; see [PROTOCOL.md](PROTOCOL.md).
 
 Several features beyond the original unlock were reverse-engineered for this
 project, from the macOS vendor binary (which ships with full C++ symbols) and
@@ -217,7 +241,18 @@ with the drive and are readable before unlock on any machine.
 
 **Format** — `ironkey-unlock format --fs vfat|exfat|ext4 [--label NAME]`
 creates a filesystem on an unlocked drive's data disk through udisks (polkit,
-no root); `ext4` is made owned by the invoking user.
+no root); `ext4` is made owned by the invoking user. After formatting it drops an
+empty `USBtoCloudInstallDeclined.txt` on the disk — the marker the Windows vendor
+client writes when you decline its cloud-backup upsell, so that client stops
+nagging.
+
+**Admin resets the user password** (`ironkey-unlock reset-user-password`) sets a
+new user password using only the **admin** password — no old user password, no
+data loss — for when a user forgets theirs or is locked out. It mirrors the
+vendor's own flow (an admin self-verify `FF A6`, then `FF A8` with
+`enc(admin) ‖ enc(new_user)` — the `NTU_PVC_ReAssign_The2ndPassword` command;
+see [PROTOCOL.md](PROTOCOL.md)). This is distinct from `change-password` (which
+needs the account's old password) and from `reset` (which erases).
 
 **SCSI transport (replug-free reset)** — the vendor commands can run over
 `SG_IO` instead of HID, keeping the drive in storage mode. That lets `reset`
@@ -232,7 +267,7 @@ zero-setup default.
 ## Building
 
 Requires CMake ≥ 3.20, a C++20 compiler, OpenSSL 3, libudev and libsystemd
-(sd-bus, for notifications):
+(sd-bus, for the tray and notifications):
 
 ```bash
 sudo apt install build-essential cmake pkg-config libssl-dev libudev-dev libsystemd-dev
@@ -240,6 +275,12 @@ cmake -S . -B build
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
+
+The GTK front-end (`ironkey-gui`: the rich unlock dialog and setup wizard) is
+**optional** — it builds only if GTK 3 is present, and the CLI and agent never
+link it. Install `libgtk-3-dev` to build it; without it the agent falls back to
+zenity/kdialog dialogs. The core tools depend only on OpenSSL, libudev and
+libsystemd.
 
 ## Usage
 
@@ -254,8 +295,22 @@ systemctl --user enable --now ironkey-agent  # start the agent with your desktop
 ### Agent
 
 `ironkey-agent` runs in your desktop session. When an IronKey is plugged in, it
-shows a password dialog (zenity, or kdialog on KDE). After unlocking, the drive
-is mounted by the desktop as usual and a notification shows which disk it is.
+shows an unlock dialog — the GTK `ironkey-gui` dialog when it is installed
+(with an admin/user toggle on two-account drives), otherwise zenity/kdialog.
+After unlocking, the drive is mounted by the desktop as usual and a notification
+shows which disk it is.
+
+It also adds a **system-tray icon** (StatusNotifierItem + dbusmenu, so it works
+on KDE and on GNOME with the AppIndicator extension — no GUI toolkit is linked
+into the agent itself). Each connected drive gets a submenu:
+
+- **Locked:** Unlock…, Show password hint, Reset user password… (admin + user
+  drives), Reset / Set up… (the GTK wizard), and a status line (account type and
+  failed-login count, read non-disruptively).
+- **Unlocked:** Open, Lock & eject, Change password…, Reset user password…
+  (admin + user drives), Format….
+
+Behaviour of the insert prompt:
 
 - Each drive gets its own dialog, naming the model, serial and USB port.
 - Cancel leaves the drive locked. The agent doesn't ask again until the drive
@@ -282,6 +337,7 @@ ironkey-unlock unlock [--device PORT]      # prompt for the password and unlock
 ironkey-unlock unlock --user               # log in with the user password (admin+user drives)
 ironkey-unlock unlock --password-stdin     # read the password from stdin (scripts)
 ironkey-unlock change-password             # change a password in place (admin or --user)
+ironkey-unlock reset-user-password         # admin sets a new user password (no old pw, no data loss)
 ironkey-unlock reset                       # forgot-password: ERASE and set a new password
 ironkey-unlock reset --name N --company C --admin-hint H   # also store owner info
 ironkey-unlock reset --scsi / --hid        # force the transport (default: auto)
@@ -344,7 +400,8 @@ and product name, so they are expected to work, but have not been tested.
 src/proto/   Protocol: command framing, RSA handshake, unlock. Depends only on OpenSSL.
 src/linux/   Linux device access: hidraw, usbfs mode switch, sysfs topology, volumes.
 src/cli/     ironkey-unlock command.
-src/agent/   ironkey-agent: udev monitor, per-port workers, password dialog, notifications.
+src/agent/   ironkey-agent: udev monitor, per-port workers, tray (SNI+dbusmenu), dialogs, wizard.
+src/gui/     ironkey-gui: optional GTK3 front-end (unlock dialog + setup wizard). GTK only here.
 packaging/   udev rule and systemd user unit.
 tests/       Unit tests; vectors.inc is generated from the original Python code.
 tools/       gen_vectors.py
