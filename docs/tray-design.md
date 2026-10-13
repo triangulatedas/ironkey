@@ -233,13 +233,14 @@ run operations on the existing per-port worker model.
    no bus/watcher. Verified on GNOME (Wayland): the icon shows in the top bar and
    the menu opens and acts; also checked via busctl (registration, properties,
    layout, and a click dispatching an action).
-3. **Status & hint** — failed-count line and on-click hint, read over SCSI when
-   available. *Done (non-UI part):* `read_device_summary()` in `device_ops`
-   reads setup (admin-only / admin+user), the admin failed-login count, lock
-   state and the owner name in a single non-disruptive pass (SCSI when the drive
-   is locked in storage mode, HID only when already in HID mode; never switches a
-   locked drive to HID). Surfaced as `ironkey-unlock status` and used by the
-   agent before it prompts. The on-click hint still needs the UI.
+3. **Status & hint — done.** Each drive is now a submenu (titled by owner name,
+   else model/serial) with a disabled status line ("Admin + user · N of 10 failed
+   logins"), Unlock…/Lock & eject, and Show password hint. Status comes from
+   `read_device_summary()`; the hint from the new `read_profile_auto()` — both a
+   single non-disruptive pass (SCSI when locked in storage mode, HID only when
+   already HID; never switches a locked drive to HID). Verified live on GNOME via
+   busctl: submenu, status line, and a Show-hint click that left the drive in
+   locked storage mode. Also surfaced as `ironkey-unlock status`.
 4. **Wizard** — single-password setup + owner info + optional format.
 5. **Admin/user** — login account choice now; user-account *provisioning* done
    (`reset --admin-user` / `reset_device(ch, admin, user)`), so the wizard just
