@@ -167,6 +167,8 @@ void Agent::run(Worker& w, const std::string& port, DryRun dry_run,
                 w.state = State::Switching;
                 ensure_hid_mode(dev, worker_log);
                 status = read_drive_status(dev);
+                summary.maybe_uninitialized = status.setup != PasswordSetup::AdminAndUser &&
+                                              status.admin_failed_attempts == 1;
             }
         }
         Login login = choose_login(status, account);
@@ -180,7 +182,14 @@ void Agent::run(Worker& w, const std::string& port, DryRun dry_run,
                    " for " + device_label + ", or cancel to leave it locked.";
         };
         std::string note;
-        if (auto failed = login.failed_attempts(status); failed && *failed > 0) {
+        if (summary.maybe_uninitialized) {
+            // A blank drive reads like one failed login, so prefer a setup hint
+            // over a misleading warning; the password field still works if the
+            // drive turns out to be provisioned.
+            note = "This looks like a new, never-initialized drive. Cancel and run "
+                   "'ironkey-unlock reset' to set it up, or enter its password if it has one";
+            log(port, "Drive appears uninitialized (hint)");
+        } else if (auto failed = login.failed_attempts(status); failed && *failed > 0) {
             log(port, login.failed_warning(*failed));
             note = "Warning: " + login.failed_warning(*failed) + ".";
         }

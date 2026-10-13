@@ -88,6 +88,15 @@ struct DeviceSummary {
     std::optional<int> admin_failed_attempts;  // index 0; user counter not exposed
     bool unlocked = false;
     bool status_read = false;  // true if GetAreaParams was actually read
+    // A hint that the drive has never been set up (no password), so a UI can
+    // offer "initialize" instead of nagging for a password. A factory/blank
+    // drive reads GetAreaParams[0x0C] = 1 and account_flags = 0x03 (verified
+    // against a never-initialized Locker+50G2), where a freshly provisioned
+    // drive reads [0x0C] = 0. But [0x0C] is also the admin failed-login counter,
+    // so a provisioned drive with exactly one recent failure looks the same;
+    // treat this as a suggestion only (offer setup, never auto-erase), and note
+    // that any successful unlock resets the counter to 0.
+    bool maybe_uninitialized = false;
 };
 
 // Reads a DeviceSummary without disrupting a locked drive (SCSI when locked in

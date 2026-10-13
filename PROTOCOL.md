@@ -371,6 +371,26 @@ logins per account**. Reaching it on the User account locks User login (the
 Admin can reset it); reaching it on the **Admin** account crypto-erases the
 drive. Where the limit itself is stored has not been identified.
 
+#### Detecting a blank (never-initialized) drive
+
+A factory-fresh, never-initialized Locker+50G2 reads (captured from a real blank
+unit, both before and after a handshake):
+
+- `GetAreaParams[0x0C] = 1` — where a freshly provisioned drive reads `0`.
+- `account_flags (0x1F) = 0x03` — identical to a single-password drive.
+- `data_sectors = 0x072F4000` — the full physical size, so size is **not** a
+  signal; a blank drive still reports its capacity.
+- `GetConfig` is identical to a provisioned drive apart from the session flag.
+
+So the **only** distinguishing byte is `0x0C`, which is also the admin
+failed-login counter. A blank drive is therefore indistinguishable from a
+provisioned drive that has had **exactly one** failed login, using only the
+no-session queries. Treat `0x0C == 1` (with `account_flags != 0x07`) as a *hint*
+that the drive may be uninitialized — enough to offer setup rather than nag for a
+password — but never as grounds to auto-erase. The counter resets to 0 on any
+successful unlock, so the ambiguity clears itself. (`read_device_summary()` sets
+`maybe_uninitialized` on this basis; `ironkey-unlock status` reports it.)
+
 ### Accounts (userIDIndex)
 
 FF A4's CDB[4] selects the account. With admin and user passwords both set:

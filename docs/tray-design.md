@@ -145,8 +145,16 @@ run operations on the existing per-port worker model.
   different tokens even when their first 16 chars match. No hidden per-account
   element. The UI wizard just needs to collect the two passwords and call
   `reset_device_full(..., user_password)`.
-- **Factory/blank detection.** Need to confirm how a never-initialized drive
-  reports (GetAreaParams / GetConfig) so the wizard can auto-offer setup.
+- **Factory/blank detection — characterized (best-effort hint).** A real blank
+  drive reads `GetAreaParams[0x0C] = 1` and `account_flags = 0x03` (vs `[0x0C] = 0`
+  on a freshly provisioned drive); size and `GetConfig` give no signal. But
+  `0x0C` is also the admin failed-login counter, so a blank drive is ambiguous
+  with a provisioned drive at exactly one failed login (see PROTOCOL.md).
+  Implemented as `DeviceSummary::maybe_uninitialized` (set by
+  `read_device_summary`, shown by `ironkey-unlock status`, and used by the agent
+  to offer setup instead of a bogus "1 failed login" warning). The wizard should
+  *offer* initialize on this hint, never auto-erase; the ambiguity self-clears on
+  the next successful unlock.
 - **SNI host availability.** Bare GNOME needs the AppIndicator extension; the
   agent should degrade gracefully (keep working headless with notifications) if
   no StatusNotifierWatcher is present.
