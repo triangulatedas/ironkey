@@ -483,11 +483,38 @@ which needs no privilege.
 |---|---|---|
 | Initialize / set passwords | `DriveSDK::setPassword(admin, user, mode)` | `UDV_SetExternalPVC0`, `encryptPVCKey` |
 | Change password | `DriveSDK::changePassword(old, new, flag)` | — |
-| Reset user password (as admin) | `DriveSDK::resetUserPassword(new)` | — |
+| Reset user password (as admin) | `DriveSDK::resetUserPassword(adminPw, newUserPw)` | `NTU_PVC_ReAssign_The2ndPassword` — see below |
 | Recovery password | `DriveSDK::createRecoveryPassword`, `useRecoveryPasswordToCreateNewUserPassword` | — |
 | **Reset / crypto-erase** | `DriveSDK::formatPartition()` | **`UDV_FormatPartition(lun, buf, len, 0)`** |
 | Retry counter | `DriveSDK::getPasswordRemainRetryCount(account)` | `FF 04 01` device-info read (`remaining = max − failed`) |
 | Read-only / hidden area | `DriveSDK::setupProtectedHiddenArea`, `read/writeProtectHiddenArea` | `UDV_Read/WriteProtectHidden_Type1` |
+
+### Admin resets the user ("2nd") password — `NTU_PVC_ReAssign_The2ndPassword`
+
+The admin can set a *new user password without the old one and without erasing
+data* — distinct from `changePassword` (needs the old password) and from `reset`
+(crypto-erase). Disassembling `DriveSDK::resetUserPassword(adminPw, newUserPw)`
+(macOS, x86_64) shows:
+
+- It opens a **PVC0 secure session** (`GetPVC0Status` / `SetVendorInterfacePVC0`
+  — the same `FF 8B` + `FF 8F` PVC open the other management commands use).
+- It builds a **32-byte buffer = `password_block(adminPw)` (16) ‖
+  `password_block(newUserPw)` (16)** — both the usual 16-byte blocks, AES-ECB
+  under the session key — then sends it with length `0x20` via the vendor method
+  **`NTU_PVC_ReAssign_The2ndPassword:buffer:size:userIDcount:`** (a dedicated
+  command, *not* `NTU_PVC_Change_Password`).
+- Both passwords are validated as ≤ 16-byte blocks (so a passphrase is MD5-folded
+  first, like everywhere else — see `password_block`).
+
+So the shape mirrors change-password (two 16-byte blocks) but the **first block
+authorises as admin** and the target is the user account. The exact `FF`
+subfunction byte for this command is **not yet pinned from static analysis** (it
+is behind the SDK's ObjC dispatch) — capture the vendor "reset user password"
+flow to confirm the `FF` code and CDB, then it is straightforward to implement
+alongside `send_change_password`. Related newly-named commands seen in the
+binary: `NTU_OneTimeRecoveryPassword:buffer:size:userIDcount:action:` (the
+recovery-password feature) and `NTU_PVC_Configure_Private_Area_Key:…:userIDcount`
+(our `FF A2` reset/provision).
 
 ### Accounts
 
