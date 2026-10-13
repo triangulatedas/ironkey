@@ -282,15 +282,49 @@ link it. Install `libgtk-3-dev` to build it; without it the agent falls back to
 zenity/kdialog dialogs. The core tools depend only on OpenSSL, libudev and
 libsystemd.
 
-## Usage
+## Install
 
-Until the Debian package exists, install from a build:
+### APT repository (recommended, Debian/Ubuntu)
+
+```bash
+curl -fsSL https://apt.trisec.no/ironkey-archive-keyring.gpg \
+  | sudo tee /usr/share/keyrings/ironkey.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/ironkey.gpg] https://apt.trisec.no stable main" \
+  | sudo tee /etc/apt/sources.list.d/ironkey.list
+sudo apt update && sudo apt install ironkey      # desktop: also pulls ironkey-gui
+```
+
+The repo serves **amd64 and arm64**. On a desktop, `ironkey` pulls the GTK
+front-end (`ironkey-gui`) automatically via *Recommends*; on a server use
+`sudo apt install --no-install-recommends ironkey` for the CLI/agent only.
+`apt upgrade` then tracks new releases. The repo is self-hosted (behind a
+Cloudflare tunnel); its signing key is served at the keyring URL above and is
+built by the pipeline in [`packaging/apt`](packaging/apt).
+
+Enable the tray/agent for your desktop session:
+
+```bash
+systemctl --user enable --now ironkey-agent
+```
+
+### Download a .deb from GitHub Releases
+
+Grab `ironkey_*_<arch>.deb` (and optionally `ironkey-gui_*_<arch>.deb`) from the
+[latest release](https://github.com/triangulatedas/ironkey/releases) and:
+
+```bash
+sudo apt install ./ironkey_*_amd64.deb ./ironkey-gui_*_amd64.deb
+```
+
+### Build from source
 
 ```bash
 sudo cmake --install build --prefix /usr     # binaries, udev rule, systemd user unit
 sudo udevadm control --reload                # then replug the drive
 systemctl --user enable --now ironkey-agent  # start the agent with your desktop session
 ```
+
+## Usage
 
 ### Agent
 
