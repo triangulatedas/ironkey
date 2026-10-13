@@ -239,6 +239,7 @@ desktop session agent with a system-tray icon and a GTK wizard.
 | SCSI transport + replug-free reset (privileged helper) | done, hardware-verified |
 | Debian packages (`.deb`, core + GTK split, via CPack) | done, builds verified |
 | CI build/test + Publish release (.deb) for amd64 & arm64 | done (GitHub Actions) |
+| Self-hosted APT repository (`repo.trisec.no`, signed, amd64 & arm64) | live |
 
 Not implemented: the **one-time recovery password** — the vendor's own client for
 this model doesn't expose it either (it targets the IronKey "Privacy" line), so
