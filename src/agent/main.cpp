@@ -13,7 +13,10 @@
 
 #include "agent/agent.h"
 #include "agent/password_dialog.h"
+#include "agent/tray.h"
+#include "linux/device_ops.h"
 #include "linux/udev_monitor.h"
+#include "linux/usb_topology.h"
 
 using namespace ironkey;
 
@@ -77,17 +80,61 @@ int main(int argc, char** argv)
                      dialog.empty() ? "none found - install zenity or kdialog" : dialog.c_str());
         agent.scan();
 
-        pollfd fds[] = {{monitor.fd(), POLLIN, 0}, {sfd, POLLIN, 0}};
+        // System-tray icon (StatusNotifierItem + dbusmenu over sd-bus). If no
+        // tray host is available the agent just runs headless as before.
+        bool quit = false;
+        Tray tray({
+            .list =
+                [] {
+                    std::vector<Tray::Drive> out;
+                    for (const auto& d : find_kingston_devices())
+                        if (d.is_ironkey())
+                            out.push_back({d.port, describe(d), d.is_unlocked()});
+                    return out;
+                },
+            .unlock = [&agent](std::string port) { agent.request_unlock(port); },
+            .lock =
+                [](std::string port) {
+                    for (auto& d : find_kingston_devices())
+                        if (d.is_ironkey() && d.port == port && d.is_unlocked()) {
+                            try {
+                                lock_device(d, [](const std::string&) {});
+                            } catch (const std::exception& e) {
+                                std::fprintf(stderr, "tray: lock failed: %s\n", e.what());
+                            }
+                            return;
+                        }
+                },
+            .quit = [&quit] { quit = true; },
+        });
+        tray.start();
+
         for (;;) {
-            int rc = ::poll(fds, 2, 1000);
+            pollfd fds[3] = {{monitor.fd(), POLLIN, 0}, {sfd, POLLIN, 0}, {-1, 0, 0}};
+            nfds_t nfds = 2;
+            if (tray.active()) {
+                fds[2] = {tray.fd(), static_cast<short>(tray.events()), 0};
+                nfds = 3;
+            }
+            int rc = ::poll(fds, nfds, 1000);
             if (rc < 0 && errno != EINTR)
                 throw std::runtime_error(std::string("poll: ") + std::strerror(errno));
             if (fds[1].revents & POLLIN)
                 break;
+            bool devices_changed = false;
             if (fds[0].revents & POLLIN)
-                while (auto ev = monitor.receive())
+                while (auto ev = monitor.receive()) {
                     agent.on_event(*ev);
+                    devices_changed = true;
+                }
             agent.reap();
+            if (tray.active()) {
+                tray.process();  // serve menu/property calls, run menu actions
+                if (devices_changed)
+                    tray.notify_changed();
+                if (quit)
+                    break;
+            }
         }
         std::fprintf(stderr, "ironkey-agent stopping\n");
         agent.shutdown();

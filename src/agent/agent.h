@@ -36,6 +36,9 @@ public:
     void on_event(const UsbEvent& ev);
     // Forgets workers whose device has gone away.
     void reap();
+    // Starts (or restarts) the unlock flow for a drive on demand, e.g. from the
+    // tray's Unlock item. No-op if a worker is already busy on that port.
+    void request_unlock(const std::string& port);
     // Closes open dialogs and waits for all workers.
     void shutdown();
 

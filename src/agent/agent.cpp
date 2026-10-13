@@ -85,6 +85,21 @@ void Agent::on_event(const UsbEvent& ev)
     stop(ev.port);
 }
 
+void Agent::request_unlock(const std::string& port)
+{
+    reap();
+    auto it = workers_.find(port);
+    if (it != workers_.end()) {
+        // A finished worker is just waiting for unplug; restart it so the user
+        // gets a fresh prompt. A busy one (prompting/switching/unlocking) is left
+        // alone.
+        if (it->second->state != State::Done)
+            return;
+        stop(port);
+    }
+    start(port);
+}
+
 void Agent::reap()
 {
     for (auto it = workers_.begin(); it != workers_.end();) {

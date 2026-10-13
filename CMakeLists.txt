@@ -51,6 +51,7 @@ add_executable(ironkey-agent
     src/agent/agent.cpp
     src/agent/password_dialog.cpp
     src/agent/notify.cpp
+    src/agent/tray.cpp
 )
 target_link_libraries(ironkey-agent PRIVATE ironkey_linux PkgConfig::SYSTEMD)
 target_compile_options(ironkey-agent PRIVATE ${IRONKEY_WARNINGS})
