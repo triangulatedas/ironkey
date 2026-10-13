@@ -23,6 +23,18 @@ bool can_open(const std::string& node)
     return ::access(node.c_str(), R_OK | W_OK) == 0;
 }
 
+// Re-finds a single IronKey by USB port (empty port = any). Used to wait for a
+// drive to reappear after a soft power-cycle.
+bool find_ironkey_on_port(const std::string& port, UsbDevice& out)
+{
+    for (auto& d : find_kingston_devices())
+        if (d.is_ironkey() && (port.empty() || d.port == port)) {
+            out = std::move(d);
+            return true;
+        }
+    return false;
+}
+
 // Opens a non-disruptive read channel to the drive and runs `fn(ch)`: over HID
 // when the drive is already in HID mode, else over the SCSI helper when it is in
 // normal storage mode. Never switches a locked drive to HID. Returns true only
@@ -174,6 +186,82 @@ void reset_device_full(UsbDevice& dev, std::string_view new_password, const Prof
         write_profile(ch, profile);
         log("Owner info written.");
     }
+}
+
+bool reenumerate(UsbDevice& dev, const Log& log)
+{
+    if (dev.disks.empty())
+        throw IronKeyError("Cannot re-enumerate: the drive is not in normal storage mode");
+    const std::string port = dev.port;
+    {
+        ScsiTransport st(find_scsi_helper(), dev.disks.front().node);
+        Channel ch(st);
+        // FF 01 (NTU_Detach_Attach, Reboot=1): the device drops off the bus, so
+        // this command returns no status; the exception is expected.
+        try {
+            Bytes ff01 = {0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1};
+            ch.command(0x01, 0x01, Direction::Write, ff01, 12, {0, 0, 0, 0, 0, 0, 0, 0});
+        } catch (const std::exception&) {
+        }
+    }
+    log("Re-enumerating the drive (soft power-cycle)...");
+    // Wait for the device to drop off the bus and come back, then let udev settle
+    // (node numbers and access ACLs change on re-enumeration).
+    UsbDevice back;
+    bool went_away = false, came_back = false;
+    for (int i = 0; i < 50; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        bool present = find_ironkey_on_port(port, back);
+        if (!present)
+            went_away = true;
+        else if (went_away) {
+            came_back = true;
+            break;
+        }
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    if (came_back)
+        dev = std::move(back);
+    return came_back;
+}
+
+ResetOutcome reset_device_auto(UsbDevice& dev, std::string_view admin_password,
+                               std::string_view user_password, const Profile& profile,
+                               std::optional<bool> prefer_scsi, const Log& log)
+{
+    bool use_scsi;
+    if (prefer_scsi.has_value()) {
+        use_scsi = *prefer_scsi;
+        if (use_scsi && !scsi_usable(dev))
+            throw IronKeyError("SCSI reset is not available: the drive must be in normal storage "
+                               "mode and ironkey-scsi-helper must be installed with "
+                               "`setcap cap_sys_rawio+ep`.");
+    } else {
+        use_scsi = scsi_usable(dev);
+    }
+
+    if (use_scsi) {
+        log("Using the SCSI path (no replug needed).");
+        {
+            ScsiTransport st(find_scsi_helper(), dev.disks.front().node);
+            Channel ch(st);
+            reset_device(ch, admin_password, user_password);
+            log(user_password.empty() ? "Reset complete: area wiped and new password set."
+                                      : "Reset complete: area wiped, admin and user passwords set.");
+            if (!profile.empty()) {
+                write_profile(ch, profile);
+                log("Owner info written.");
+            }
+        }
+        reenumerate(dev, log);
+        return {ResetTransport::Scsi, /*replug_needed=*/false};
+    }
+
+    log("Using the HID path (one replug needed after reset).");
+    check_access(dev);
+    ensure_hid_mode(dev, log);
+    reset_device_full(dev, admin_password, profile, log, /*trace=*/false, user_password);
+    return {ResetTransport::Hid, /*replug_needed=*/true};
 }
 
 Profile read_profile_device(UsbDevice& dev, const Log& log, bool trace)

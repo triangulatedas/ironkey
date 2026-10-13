@@ -671,26 +671,13 @@ int cmd_reset(const std::string& port, bool password_stdin, std::optional<bool> 
     if (!select_device(port, dev))
         return 1;
 
-    // Choose the transport: explicit --scsi/--hid wins; otherwise use SCSI
-    // (no replug) when the helper is installed and working, else HID.
-    bool use_scsi;
-    if (prefer_scsi.has_value()) {
-        use_scsi = *prefer_scsi;
-        if (use_scsi && !scsi_usable(dev)) {
-            std::fprintf(stderr, "SCSI reset is not available: the drive must be in normal "
-                                 "storage mode and ironkey-scsi-helper must be installed with "
-                                 "`setcap cap_sys_rawio+ep`.\n");
-            return 1;
-        }
-    } else {
-        use_scsi = scsi_usable(dev);
-    }
-    print_log(use_scsi ? "Using the SCSI path (no replug needed)."
-                       : "Using the HID path (one replug needed after reset).");
-
-    if (!use_scsi) {
-        check_access(dev);
-        ensure_hid_mode(dev, print_log);
+    // Fail early (before prompting) if --scsi is forced but unusable; the auto
+    // path re-checks, but we would rather not ask for a password we cannot use.
+    if (prefer_scsi == true && !scsi_usable(dev)) {
+        std::fprintf(stderr, "SCSI reset is not available: the drive must be in normal "
+                             "storage mode and ironkey-scsi-helper must be installed with "
+                             "`setcap cap_sys_rawio+ep`.\n");
+        return 1;
     }
 
     std::fprintf(stderr,
@@ -743,57 +730,29 @@ int cmd_reset(const std::string& port, bool password_stdin, std::optional<bool> 
         return 1;
     }
 
-    if (use_scsi) {
-        {
-            ScsiTransport st(find_scsi_helper(), dev.disks.front().node);
-            Channel ch(st);
-            reset_device(ch, new_pw.value, with_user ? user_pw.value : std::string());
-            print_log(with_user ? "Reset complete: area wiped, admin and user passwords set."
-                                : "Reset complete: area wiped and new password set.");
-            if (!profile.empty()) {
-                write_profile(ch, profile);
-                print_log("Owner info written.");
-            }
-            // FF 01 (NTU_Detach_Attach, Reboot=1): a soft power-cycle that makes
-            // the drive re-enumerate and apply the new area geometry — replaces
-            // the physical replug. The device drops off the bus, so this command
-            // does not return a status; the exception is expected.
-            try {
-                Bytes ff01 = {0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1};
-                ch.command(0x01, 0x01, Direction::Write, ff01, 12, {0, 0, 0, 0, 0, 0, 0, 0});
-            } catch (const std::exception&) {
-            }
-        }
-        print_log("Re-enumerating the drive (soft power-cycle)...");
-        // Wait for the device to drop off the bus and come back, then let udev
-        // settle (the node numbers and access ACLs change on re-enumeration).
-        UsbDevice back;
-        bool went_away = false;
-        for (int i = 0; i < 50; ++i) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(300));
-            bool present = select_device(port, back);
-            if (!present)
-                went_away = true;
-            else if (went_away)
-                break;
-        }
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+    ResetOutcome outcome;
+    try {
+        outcome = reset_device_auto(dev, new_pw.value, with_user ? user_pw.value : std::string(),
+                                    profile, prefer_scsi, print_log);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "%s\n", e.what());
+        return 1;
+    }
+
+    if (!outcome.replug_needed) {
         std::printf("\nReset complete over SCSI — no physical replug needed.\n"
                     "Next steps:\n"
                     "  1. ironkey-unlock unlock         (unlock with the new password)\n"
                     "  2. ironkey-unlock format --fs ext4   (create a filesystem)\n");
-        return 0;
+    } else {
+        std::printf(
+            "\nReset complete: the drive was wiped and the new password set.\n"
+            "\nNext steps:\n"
+            "  1. Unplug and replug the drive (a power cycle applies the new layout).\n"
+            "  2. ironkey-unlock unlock         (unlock with the new password)\n"
+            "  3. sudo mkfs.vfat -n IRONKEY /dev/sdX   (create a filesystem; use the\n"
+            "     data disk shown by 'unlock', e.g. /dev/sda)\n");
     }
-
-    reset_device_full(dev, new_pw.value, profile, print_log, /*trace=*/false,
-                      with_user ? user_pw.value : std::string());
-    std::printf(
-        "\nReset complete: the drive was wiped and the new password set.\n"
-        "\nNext steps:\n"
-        "  1. Unplug and replug the drive (a power cycle applies the new layout).\n"
-        "  2. ironkey-unlock unlock         (unlock with the new password)\n"
-        "  3. sudo mkfs.vfat -n IRONKEY /dev/sdX   (create a filesystem; use the\n"
-        "     data disk shown by 'unlock', e.g. /dev/sda)\n");
     return 0;
 }
 

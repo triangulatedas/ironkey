@@ -149,6 +149,33 @@ void set_password_device(UsbDevice& dev, std::string_view new_password, const Lo
 void reset_device_full(UsbDevice& dev, std::string_view new_password, const Profile& profile,
                        const Log& log, bool trace = false, std::string_view user_password = {});
 
+// Soft power-cycle over SCSI (FF 01, NTU_Detach_Attach with Reboot): the drive
+// drops off the bus and re-enumerates, applying a new area geometry without a
+// physical replug. Waits for it to leave and come back (then lets udev settle)
+// and refreshes `dev` to the re-enumerated device. The drive must be in normal
+// storage mode with the SCSI helper usable. Returns true if it came back.
+bool reenumerate(UsbDevice& dev, const Log& log);
+
+// Which transport reset_device_auto used, and whether the caller must still tell
+// the user to replug (the SCSI path power-cycles itself; HID needs one replug).
+enum class ResetTransport { Scsi, Hid };
+struct ResetOutcome {
+    ResetTransport transport = ResetTransport::Hid;
+    bool replug_needed = true;
+};
+
+// Full reset choosing the transport automatically: the replug-free SCSI path
+// when the helper is usable and the drive is in storage mode, else HID.
+// `prefer_scsi` forces the choice (nullopt = auto); forcing SCSI when it is not
+// usable throws. Wipes the drive (crypto-erase, DESTROYS ALL DATA) and sets the
+// admin password, plus the user password when `user_password` is non-empty;
+// writes `profile` when it is non-empty. On the SCSI path it then power-cycles
+// and waits for the drive to re-enumerate (refreshing `dev`). No old password is
+// needed. Create a filesystem on the blank data partition afterwards.
+ResetOutcome reset_device_auto(UsbDevice& dev, std::string_view admin_password,
+                               std::string_view user_password, const Profile& profile,
+                               std::optional<bool> prefer_scsi, const Log& log);
+
 // Reads the owner profile (name/company/description/hints) without unlocking.
 // The drive must be in HID mode.
 Profile read_profile_device(UsbDevice& dev, const Log& log, bool trace = false);
