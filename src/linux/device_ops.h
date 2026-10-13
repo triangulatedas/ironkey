@@ -88,15 +88,13 @@ struct DeviceSummary {
     std::optional<int> admin_failed_attempts;  // index 0; user counter not exposed
     bool unlocked = false;
     bool status_read = false;  // true if GetAreaParams was actually read
-    // A hint that the drive has never been set up (no password), so a UI can
-    // offer "initialize" instead of nagging for a password. A factory/blank
-    // drive reads GetAreaParams[0x0C] = 1 and account_flags = 0x03 (verified
-    // against a never-initialized Locker+50G2), where a freshly provisioned
-    // drive reads [0x0C] = 0. But [0x0C] is also the admin failed-login counter,
-    // so a provisioned drive with exactly one recent failure looks the same;
-    // treat this as a suggestion only (offer setup, never auto-erase), and note
-    // that any successful unlock resets the counter to 0.
-    bool maybe_uninitialized = false;
+    // Note: there is no reliable "is a drive blank / has no password" signal in
+    // the status queries. A never-initialized drive is indistinguishable from a
+    // single-password drive that has had one failed login (both read
+    // account_flags 0x03 with GetAreaParams[0x0C] = 1), and the vendor's own
+    // richer queries carry no extra account state (see PROTOCOL.md). So we do not
+    // guess; a UI should simply offer both "unlock" and "set up" for a locked
+    // drive. account_flags DOES cleanly identify admin+user (0x07) vs not (0x03).
 };
 
 // Reads a DeviceSummary without disrupting a locked drive (SCSI when locked in

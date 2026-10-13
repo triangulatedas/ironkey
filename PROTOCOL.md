@@ -371,7 +371,7 @@ logins per account**. Reaching it on the User account locks User login (the
 Admin can reset it); reaching it on the **Admin** account crypto-erases the
 drive. Where the limit itself is stored has not been identified.
 
-#### Detecting a blank (never-initialized) drive
+#### Detecting a blank (never-initialized) drive — not reliably possible
 
 A factory-fresh, never-initialized Locker+50G2 reads (captured from a real blank
 unit, both before and after a handshake):
@@ -382,14 +382,26 @@ unit, both before and after a handshake):
   signal; a blank drive still reports its capacity.
 - `GetConfig` is identical to a provisioned drive apart from the session flag.
 
-So the **only** distinguishing byte is `0x0C`, which is also the admin
-failed-login counter. A blank drive is therefore indistinguishable from a
-provisioned drive that has had **exactly one** failed login, using only the
-no-session queries. Treat `0x0C == 1` (with `account_flags != 0x07`) as a *hint*
-that the drive may be uninitialized — enough to offer setup rather than nag for a
-password — but never as grounds to auto-erase. The counter resets to 0 on any
-successful unlock, so the ambiguity clears itself. (`read_device_summary()` sets
-`maybe_uninitialized` on this basis; `ironkey-unlock status` reports it.)
+So the only byte that moves is `0x0C`, which is also the admin failed-login
+counter. A blank drive is therefore **indistinguishable from a single-password
+drive that has had exactly one failed login** (a common state — one mistyped
+password), using the no-session queries.
+
+The vendor app does no better. Captured at its unlock screen, it issues a wider
+set of reads — `FF A0` per account index (`CDB[4] = 0x00/0x01`), a summary
+`FF A0 … CDB[3]=0xFF`, and two `FF 00 …` reads (`CDB[3]=0x08` and `0x0C`,
+512-byte device-info / retry-limit blocks). Comparing those across blank,
+single-password and admin+user drives, **the extra reads are byte-identical** —
+they carry device-model and retry-limit constants, not account state. The only
+account-distinguishing bytes anywhere are in `FF A0 CDB[4]=0`: `0x1F`
+(`0x07` = admin+user, `0x03` = single *or* blank) and the ambiguous `0x0C`. The
+vendor SDK's `DriveSDK::getPasswordExist(account)` works from these same inputs.
+
+**Conclusion:** `0x1F` cleanly identifies an admin+user drive (always
+provisioned), but there is no reliable signal for "blank vs single-password." We
+therefore do **not** auto-classify a drive as uninitialized; a UI should offer
+both "unlock" and "set up / reset" for a locked drive and let the user choose.
+`FF 00` command decoding is noted here only for completeness.
 
 ### Accounts (userIDIndex)
 

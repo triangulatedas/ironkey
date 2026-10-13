@@ -255,11 +255,6 @@ DeviceSummary read_device_summary(const UsbDevice& dev)
         s.setup = p.has_user_account() ? PasswordSetup::AdminAndUser : PasswordSetup::Single;
         s.admin_failed_attempts = p.admin_failed_attempts;
         s.status_read = true;
-        // See DeviceSummary::maybe_uninitialized: a blank drive reads single-
-        // setup with [0x0C] = 1. (Ambiguous with a single failed login, so only
-        // a hint.) An admin+user drive is never blank, so exclude it.
-        s.maybe_uninitialized = s.setup != PasswordSetup::AdminAndUser &&
-                                p.admin_failed_attempts == 1;
         // The owner-set name is a nice-to-have for telling drives apart; a
         // failure to read it (e.g. the profile session over SCSI) must not lose
         // the status we already have, so swallow it separately.

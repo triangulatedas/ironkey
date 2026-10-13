@@ -91,13 +91,14 @@ without switching to HID** — ideal for a passive tray. So:
 
 ## Setup / initialize wizard (zenity sequence)
 
-Entry points: the `Reset / Set up…` menu item, and an auto-prompt the agent
-raises when it sees a **factory/blank** drive (optional, like the current
-unlock prompt).
+Entry point: the `Reset / Set up…` menu item (always available on a locked
+drive). There is **no** reliable "this drive is blank" auto-prompt — a blank
+drive can't be told apart from a single mistyped password (see Gaps) — so setup
+is always user-initiated, never auto-raised.
 
 Steps:
-1. **Confirm erase** (skip if the drive is already blank): big warning + type
-   ERASE / click-through.
+1. **Confirm erase**: big warning + type ERASE / click-through. (We can't assume
+   the drive is blank, so the erase confirmation always applies.)
 2. **Accounts**: single password, or admin + user. *(see Gaps — user account
    provisioning isn't implemented yet.)*
 3. **Password(s)**: complex (≤16) or passphrase (≤64); confirm field; show the
@@ -145,16 +146,17 @@ run operations on the existing per-port worker model.
   different tokens even when their first 16 chars match. No hidden per-account
   element. The UI wizard just needs to collect the two passwords and call
   `reset_device_full(..., user_password)`.
-- **Factory/blank detection — characterized (best-effort hint).** A real blank
-  drive reads `GetAreaParams[0x0C] = 1` and `account_flags = 0x03` (vs `[0x0C] = 0`
-  on a freshly provisioned drive); size and `GetConfig` give no signal. But
-  `0x0C` is also the admin failed-login counter, so a blank drive is ambiguous
-  with a provisioned drive at exactly one failed login (see PROTOCOL.md).
-  Implemented as `DeviceSummary::maybe_uninitialized` (set by
-  `read_device_summary`, shown by `ironkey-unlock status`, and used by the agent
-  to offer setup instead of a bogus "1 failed login" warning). The wizard should
-  *offer* initialize on this hint, never auto-erase; the ambiguity self-clears on
-  the next successful unlock.
+- **Factory/blank detection — investigated, not reliably possible; do not
+  auto-classify.** A real blank drive reads `GetAreaParams[0x0C] = 1` and
+  `account_flags = 0x03`; a freshly provisioned drive reads `[0x0C] = 0`. But
+  `0x0C` is the admin failed-login counter, so a blank drive is indistinguishable
+  from a single-password drive at exactly one failed login (a common mistype).
+  The vendor app's richer reads (`FF A0` per account, `FF A0 CDB[3]=0xFF`
+  summary, `FF 00` device-info/retry blocks) are byte-identical across blank /
+  single / admin+user — they carry no account state — so the vendor has no clean
+  signal either (see PROTOCOL.md). **Decision:** the tray offers **both**
+  "Unlock…" and "Reset / Set up…" for every locked drive and never guesses
+  "uninitialized." `account_flags` still cleanly flags admin+user (`0x07`).
 - **SNI host availability.** Bare GNOME needs the AppIndicator extension; the
   agent should degrade gracefully (keep working headless with notifications) if
   no StatusNotifierWatcher is present.

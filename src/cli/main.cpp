@@ -601,10 +601,6 @@ int cmd_status(const std::string& port)
     if (s.admin_failed_attempts)
         std::printf("  Failed logins: %d of %d (admin; resets on a successful unlock)\n",
                     *s.admin_failed_attempts, kDefaultMaxFailedAttempts);
-    if (s.maybe_uninitialized)
-        std::printf("  Note:          looks like a new, never-initialized drive (set it up with "
-                    "'reset'). A drive with exactly one failed login reads the same, so this is "
-                    "only a hint.\n");
     if (!s.status_read)
         std::printf("  (Could not read the drive's setup without disruption — install the SCSI "
                     "helper, or use 'dump', which switches to HID mode.)\n");
