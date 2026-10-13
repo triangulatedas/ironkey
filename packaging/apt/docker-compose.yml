@@ -1,0 +1,76 @@
+name: ironkey-apt
+
+# Self-hosted APT repository for the ironkey packages.
+#
+# Two services:
+#   - apt:     nginx serving the reprepro repo (dists/ + pool/ + keyring), on the
+#              external `aptnet` so the trisec.no cloudflared (in ./dawn) can
+#              reach it by name. This stack runs NO tunnel of its own.
+#   - updater: periodically pulls the latest GitHub release .debs (public, no
+#              auth) and (re)builds + signs the repo with reprepro. Generates the
+#              signing key on first run (kept in ./.gnupg-signing, never served).
+#
+# Prerequisites on the host (see README.md):
+#   docker network create aptnet
+#   # add `aptnet` (external) to dawn_cloudflared's networks and recreate it
+#   # add a Cloudflare Public Hostname: apt.trisec.no -> http://ironkey-apt:80
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  apt:
+    image: nginx:alpine
+    container_name: ironkey-apt
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
+    volumes:
+      - ./repo:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - aptnet
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    logging: *default-logging
+
+  updater:
+    build: ./updater
+    container_name: ironkey-apt-updater
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      REPO_SLUG: triangulatedas/ironkey
+      INTERVAL: "21600"   # re-check the latest release every 6h
+      SUITE: stable
+    volumes:
+      - ./repo:/repo
+      - ./.gnupg-signing:/gnupg
+    networks:
+      - updnet            # outbound internet (GitHub) via NAT; not on aptnet
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging: *default-logging
+
+networks:
+  aptnet:
+    name: aptnet
+    external: true        # shared with the cloudflared in ./dawn
+  updnet:
+    driver: bridge
