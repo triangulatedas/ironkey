@@ -7,7 +7,14 @@ on:
 
 jobs:
   build-test:
-    runs-on: ubuntu-latest
+    name: build-test (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, arch: amd64 }
+          - { runner: ubuntu-24.04-arm, arch: arm64 }  # native arm64 runner
     steps:
       - uses: actions/checkout@v4
       - name: Install build dependencies
