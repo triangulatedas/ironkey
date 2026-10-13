@@ -103,6 +103,11 @@ struct DeviceSummary {
 // is best-effort and left at its default when it cannot be read.
 DeviceSummary read_device_summary(const UsbDevice& dev);
 
+// Reads the owner profile (incl. password hints) without disrupting a locked
+// drive — over SCSI when it is locked in storage mode, HID when already in HID
+// mode. Returns an empty Profile when it cannot be read. See read_device_summary.
+Profile read_profile_auto(const UsbDevice& dev);
+
 // The account to log in with and how to talk about it.
 struct Login {
     Account account = Account::Admin;

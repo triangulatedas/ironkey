@@ -42,39 +42,55 @@ void prop_b(sd_bus_message* m, const char* key, int val)
 
 // --- dbusmenu property dicts, shared by GetLayout and GetGroupProperties -----
 
-void Tray::append_props_dict(sd_bus_message* m, const Tray::Item* it)
+void Tray::append_props_dict(sd_bus_message* m, const Tray::Item& it)
 {
     sd_bus_message_open_container(m, 'a', "{sv}");
-    if (!it) {
-        prop_s(m, "children-display", "submenu");  // the root
-    } else if (it->kind == Tray::Kind::Separator) {
+    if (it.kind == Tray::Kind::Separator) {
         prop_s(m, "type", "separator");
     } else {
-        prop_s(m, "label", it->label.c_str());
-        prop_b(m, "enabled", it->enabled ? 1 : 0);
+        if (it.kind == Tray::Kind::Submenu)
+            prop_s(m, "children-display", "submenu");
+        if (!it.label.empty())
+            prop_s(m, "label", it.label.c_str());
+        prop_b(m, "enabled", it.enabled ? 1 : 0);
         prop_b(m, "visible", 1);
     }
     sd_bus_message_close_container(m);
 }
 
-// Append a full "(ia{sv}av)" layout struct. `children` non-null => inline them
-// (one recursion level, which is all a flat menu needs).
-void Tray::append_item_struct(sd_bus_message* m, const Tray::Item* it,
-                              const std::vector<Tray::Item>* children)
+// Append a full "(ia{sv}av)" layout struct, recursing into children.
+void Tray::append_item_struct(sd_bus_message* m, const Tray::Item& it)
 {
     sd_bus_message_open_container(m, 'r', "ia{sv}av");
-    sd_bus_message_append(m, "i", it ? it->id : 0);
+    sd_bus_message_append(m, "i", it.id);
     append_props_dict(m, it);
     sd_bus_message_open_container(m, 'a', "v");
-    if (children) {
-        for (const auto& c : *children) {
-            sd_bus_message_open_container(m, 'v', "(ia{sv}av)");
-            append_item_struct(m, &c, nullptr);
-            sd_bus_message_close_container(m);
-        }
+    for (const auto& c : it.children) {
+        sd_bus_message_open_container(m, 'v', "(ia{sv}av)");
+        append_item_struct(m, c);
+        sd_bus_message_close_container(m);
     }
     sd_bus_message_close_container(m);
     sd_bus_message_close_container(m);
+}
+
+Tray::Item Tray::build_root() const
+{
+    Item root;
+    root.id = 0;
+    root.kind = Kind::Submenu;
+    root.children = items_;
+    return root;
+}
+
+const Tray::Item* Tray::find_in(const Item& node, int id)
+{
+    if (node.id == id)
+        return &node;
+    for (const auto& c : node.children)
+        if (const Item* f = find_in(c, id))
+            return f;
+    return nullptr;
 }
 
 // --- construction ------------------------------------------------------------
@@ -177,37 +193,60 @@ void Tray::rebuild_items()
     std::vector<Drive> drives = cb_.list ? cb_.list() : std::vector<Drive>{};
     int id = 100;
     for (const auto& d : drives) {
-        Item it;
-        it.id = id++;
-        it.kind = Kind::Action;
-        it.port = d.port;
-        if (d.unlocked) {
-            it.label = "Lock " + d.label;
-            it.action = Act::Lock;
-        } else {
-            it.label = "Unlock " + d.label;
-            it.action = Act::Unlock;
+        Item sub;
+        sub.id = id++;
+        sub.kind = Kind::Submenu;
+        sub.label = d.label;
+
+        if (!d.status.empty()) {
+            Item status;
+            status.id = id++;
+            status.kind = Kind::Action;
+            status.label = d.status;
+            status.action = Act::None;
+            status.enabled = false;  // informational line
+            sub.children.push_back(std::move(status));
+            sub.children.push_back({id++, Kind::Separator, "", "", Act::None, true, {}});
         }
-        items_.push_back(std::move(it));
+
+        Item primary;
+        primary.id = id++;
+        primary.kind = Kind::Action;
+        primary.port = d.port;
+        if (d.unlocked) {
+            primary.label = "Lock && eject";  // "&&" renders as one "&"
+            primary.action = Act::Lock;
+        } else {
+            primary.label = "Unlock…";
+            primary.action = Act::Unlock;
+        }
+        sub.children.push_back(std::move(primary));
+
+        if (!d.unlocked) {
+            Item hint;
+            hint.id = id++;
+            hint.kind = Kind::Action;
+            hint.port = d.port;
+            hint.label = "Show password hint";
+            hint.action = Act::ShowHint;
+            sub.children.push_back(std::move(hint));
+        }
+
+        items_.push_back(std::move(sub));
     }
     if (drives.empty()) {
-        Item none;
-        none.id = id++;
-        none.kind = Kind::Action;
-        none.label = "No IronKey drives connected";
-        none.action = Act::None;
-        none.enabled = false;
+        Item none{id++, Kind::Action, "No IronKey drives connected", "", Act::None, false, {}};
         items_.push_back(std::move(none));
     }
-    items_.push_back({90, Kind::Separator, "", "", Act::None, true});
-    items_.push_back({1, Kind::Action, "Quit", "", Act::Quit, true});
+    items_.push_back({90, Kind::Separator, "", "", Act::None, true, {}});
+    items_.push_back({1, Kind::Action, "Quit", "", Act::Quit, true, {}});
 }
 
 const Tray::Item* Tray::find_item(int id) const
 {
     for (const auto& it : items_)
-        if (it.id == id)
-            return &it;
+        if (const Item* f = find_in(it, id))
+            return f;
     return nullptr;
 }
 
@@ -288,18 +327,19 @@ int Tray::menu_get_layout(sd_bus_message* m, void* userdata, sd_bus_error*)
     int parent = 0, depth = 0;
     sd_bus_message_read(m, "ii", &parent, &depth);
     sd_bus_message_skip(m, "as");
-    self->rebuild_items();
+    // items_ were refreshed by AboutToShow (hosts call it before showing) or at
+    // start()/hotplug; avoid another device read here.
 
     sd_bus_message* reply = nullptr;
     sd_bus_message_new_method_return(m, &reply);
     sd_bus_message_append(reply, "u", self->menu_revision_);
-    if (parent == 0) {
-        append_item_struct(reply, nullptr, &self->items_);
-    } else if (const Item* it = self->find_item(parent)) {
-        append_item_struct(reply, it, nullptr);
+    Item root = self->build_root();
+    const Item* target = (parent == 0) ? &root : find_in(root, parent);
+    if (target) {
+        append_item_struct(reply, *target);
     } else {
-        Item empty{parent, Kind::Action, "", "", Act::None, true};
-        append_item_struct(reply, &empty, nullptr);
+        Item empty{parent, Kind::Action, "", "", Act::None, true, {}};
+        append_item_struct(reply, empty);
     }
     sd_bus_send(nullptr, reply, nullptr);
     sd_bus_message_unref(reply);
@@ -309,7 +349,6 @@ int Tray::menu_get_layout(sd_bus_message* m, void* userdata, sd_bus_error*)
 int Tray::menu_get_group_properties(sd_bus_message* m, void* userdata, sd_bus_error*)
 {
     auto* self = static_cast<Tray*>(userdata);
-    self->rebuild_items();
 
     // Requested ids (empty => all).
     std::vector<int> ids;
@@ -328,21 +367,25 @@ int Tray::menu_get_group_properties(sd_bus_message* m, void* userdata, sd_bus_er
         return false;
     };
 
+    // Flatten the tree (root + all descendants) so any requested id is found.
+    std::vector<const Item*> all;
+    Item root = self->build_root();
+    std::function<void(const Item&)> collect = [&](const Item& n) {
+        all.push_back(&n);
+        for (const auto& c : n.children)
+            collect(c);
+    };
+    collect(root);
+
     sd_bus_message* reply = nullptr;
     sd_bus_message_new_method_return(m, &reply);
     sd_bus_message_open_container(reply, 'a', "(ia{sv})");
-    if (wanted(0)) {
-        sd_bus_message_open_container(reply, 'r', "ia{sv}");
-        sd_bus_message_append(reply, "i", 0);
-        append_props_dict(reply, nullptr);
-        sd_bus_message_close_container(reply);
-    }
-    for (const auto& it : self->items_) {
-        if (!wanted(it.id))
+    for (const Item* it : all) {
+        if (!wanted(it->id))
             continue;
         sd_bus_message_open_container(reply, 'r', "ia{sv}");
-        sd_bus_message_append(reply, "i", it.id);
-        append_props_dict(reply, &it);
+        sd_bus_message_append(reply, "i", it->id);
+        append_props_dict(reply, *it);
         sd_bus_message_close_container(reply);
     }
     sd_bus_message_close_container(reply);
@@ -394,6 +437,10 @@ int Tray::menu_event(sd_bus_message* m, void* userdata, sd_bus_error*)
             case Act::Lock:
                 if (self->cb_.lock)
                     self->cb_.lock(it->port);
+                break;
+            case Act::ShowHint:
+                if (self->cb_.show_hint)
+                    self->cb_.show_hint(it->port);
                 break;
             case Act::Quit:
                 if (self->cb_.quit)

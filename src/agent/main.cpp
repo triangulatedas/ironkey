@@ -12,6 +12,7 @@
 #include <string_view>
 
 #include "agent/agent.h"
+#include "agent/notify.h"
 #include "agent/password_dialog.h"
 #include "agent/tray.h"
 #include "linux/device_ops.h"
@@ -87,9 +88,25 @@ int main(int argc, char** argv)
             .list =
                 [] {
                     std::vector<Tray::Drive> out;
-                    for (const auto& d : find_kingston_devices())
-                        if (d.is_ironkey())
-                            out.push_back({d.port, describe(d), d.is_unlocked()});
+                    for (auto& d : find_kingston_devices()) {
+                        if (!d.is_ironkey())
+                            continue;
+                        // One non-disruptive read per drive (SCSI when locked in
+                        // storage mode); the host asks only on menu open.
+                        DeviceSummary s = read_device_summary(d);
+                        std::string label = s.owner_name.empty() ? describe(d) : s.owner_name;
+                        std::string status;
+                        if (s.status_read) {
+                            status = s.setup == PasswordSetup::AdminAndUser ? "Admin + user"
+                                     : s.setup == PasswordSetup::Single      ? "Single password"
+                                                                             : "Setup unknown";
+                            if (s.admin_failed_attempts)
+                                status += "  ·  " + std::to_string(*s.admin_failed_attempts) +
+                                          " of " + std::to_string(kDefaultMaxFailedAttempts) +
+                                          " failed logins";
+                        }
+                        out.push_back({d.port, label, d.is_unlocked(), status});
+                    }
                     return out;
                 },
             .unlock = [&agent](std::string port) { agent.request_unlock(port); },
@@ -104,6 +121,18 @@ int main(int argc, char** argv)
                             }
                             return;
                         }
+                },
+            .show_hint =
+                [](std::string port) {
+                    for (auto& d : find_kingston_devices()) {
+                        if (!d.is_ironkey() || d.port != port)
+                            continue;
+                        Profile p = read_profile_auto(d);  // non-disruptive
+                        std::string hint = !p.admin_hint.empty() ? p.admin_hint : p.user_hint;
+                        notify("IronKey password hint",
+                               hint.empty() ? "No password hint is stored on this drive." : hint);
+                        return;
+                    }
                 },
             .quit = [&quit] { quit = true; },
         });

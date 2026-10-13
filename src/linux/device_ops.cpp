@@ -264,6 +264,13 @@ ResetOutcome reset_device_auto(UsbDevice& dev, std::string_view admin_password,
     return {ResetTransport::Hid, /*replug_needed=*/true};
 }
 
+Profile read_profile_auto(const UsbDevice& dev)
+{
+    Profile p;
+    on_read_channel(dev, [&](Channel& ch) { p = read_profile(ch); });
+    return p;
+}
+
 Profile read_profile_device(UsbDevice& dev, const Log& log, bool trace)
 {
     if (!dev.in_hid_mode())

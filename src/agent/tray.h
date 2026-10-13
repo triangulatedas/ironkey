@@ -26,13 +26,15 @@ public:
         std::string port;   // USB port path, the stable id
         std::string label;  // human description (owner name / model / serial)
         bool unlocked = false;
+        std::string status; // one-line status for a disabled menu entry, or empty
     };
 
     struct Callbacks {
         std::function<std::vector<Drive>()> list;  // current drives, for the menu
-        std::function<void(std::string port)> unlock;  // user picked Unlock
-        std::function<void(std::string port)> lock;    // user picked Lock
-        std::function<void()> quit;                     // user picked Quit
+        std::function<void(std::string port)> unlock;     // user picked Unlock
+        std::function<void(std::string port)> lock;       // user picked Lock & eject
+        std::function<void(std::string port)> show_hint;  // user picked Show hint
+        std::function<void()> quit;                        // user picked Quit
     };
 
     explicit Tray(Callbacks cb);
@@ -57,22 +59,25 @@ public:
     bool active() const { return bus_ != nullptr; }
 
 private:
-    // dbusmenu item model, rebuilt from cb_.list() on each layout request.
-    enum class Kind { Action, Separator };
-    enum class Act { Unlock, Lock, Quit, None };
+    // dbusmenu item model (a shallow tree), rebuilt from cb_.list() on each
+    // layout request. A Submenu item carries children; the root is a Submenu.
+    enum class Kind { Action, Separator, Submenu };
+    enum class Act { Unlock, Lock, ShowHint, Quit, None };
     struct Item {
         int id;
         Kind kind;
         std::string label;
-        std::string port;      // for Unlock/Lock items
+        std::string port;      // for per-drive action items
         Act action = Act::None;
         bool enabled = true;
+        std::vector<Item> children;  // for Submenu items
     };
     void rebuild_items();
     const Item* find_item(int id) const;
-    static void append_props_dict(sd_bus_message* m, const Item* it);
-    static void append_item_struct(sd_bus_message* m, const Item* it,
-                                   const std::vector<Item>* children);
+    static void append_props_dict(sd_bus_message* m, const Item& it);
+    static void append_item_struct(sd_bus_message* m, const Item& it);
+    Item build_root() const;  // id-0 Submenu whose children are items_
+    static const Item* find_in(const Item& node, int id);
 
     // sd-bus method/property trampolines (static; userdata = this).
     static int sni_get_property(sd_bus* bus, const char* path, const char* iface,
