@@ -638,6 +638,166 @@ int run_setup(const char* label)
     return w.result;
 }
 
+// ============================ format dialog =================================
+
+int run_format(const char* label)
+{
+    load_css();
+    GtkWidget* d = gtk_dialog_new_with_buttons("Format IronKey", nullptr, GTK_DIALOG_MODAL,
+                                               "_Cancel", GTK_RESPONSE_CANCEL, "_Format",
+                                               GTK_RESPONSE_OK, nullptr);
+    gtk_window_set_default_size(GTK_WINDOW(d), 460, -1);
+    add_class(gtk_dialog_get_widget_for_response(GTK_DIALOG(d), GTK_RESPONSE_OK),
+              "destructive-action");
+    GtkWidget* box = gtk_dialog_get_content_area(GTK_DIALOG(d));
+    gtk_container_set_border_width(GTK_CONTAINER(box), 18);
+    gtk_box_set_spacing(GTK_BOX(box), 12);
+
+    GtkWidget* warn = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    gtk_box_pack_start(GTK_BOX(warn),
+                       gtk_image_new_from_icon_name("dialog-warning", GTK_ICON_SIZE_DIALOG), FALSE,
+                       FALSE, 0);
+    GtkWidget* wl = gtk_label_new(nullptr);
+    char* m = g_markup_printf_escaped("This <b>erases the data disk</b> of\n<b>%s</b>.",
+                                      label ? label : "this drive");
+    gtk_label_set_markup(GTK_LABEL(wl), m);
+    g_free(m);
+    gtk_label_set_line_wrap(GTK_LABEL(wl), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(wl), 0.0f);
+    gtk_box_pack_start(GTK_BOX(warn), wl, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(box), warn, FALSE, FALSE, 0);
+
+    GtkWidget* namerow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    GtkWidget* namelab = gtk_label_new("Drive name");
+    GtkWidget* name = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(name), "IRONKEY");
+    gtk_widget_set_hexpand(name, TRUE);
+    gtk_box_pack_start(GTK_BOX(namerow), namelab, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(namerow), name, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(box), namerow, FALSE, FALSE, 0);
+
+    GtkWidget* exp = gtk_expander_new("Custom format options");
+    GtkWidget* combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo), "exfat",
+                              "exFAT — Windows, macOS and Linux (recommended)");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo), "vfat",
+                              "FAT32 — most compatible, no files over 4 GB");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo), "ext4", "ext4 — Linux only");
+    gtk_combo_box_set_active_id(GTK_COMBO_BOX(combo), "exfat");
+    gtk_container_add(GTK_CONTAINER(exp), combo);
+    gtk_box_pack_start(GTK_BOX(box), exp, FALSE, FALSE, 0);
+
+    gtk_widget_show_all(d);
+    int resp = gtk_dialog_run(GTK_DIALOG(d));
+    int rc = 1;
+    if (resp == GTK_RESPONSE_OK) {
+        emit("format", gtk_combo_box_get_active_id(GTK_COMBO_BOX(combo)));
+        emit("label", gtk_entry_get_text(GTK_ENTRY(name)));
+        rc = 0;
+    }
+    gtk_widget_destroy(d);
+    return rc;
+}
+
+// ============================ change-password dialog ========================
+
+struct ChangeCtx {
+    GtkWidget* ok;
+    GtkWidget* new_pw;
+    GtkWidget* confirm;
+    GtkWidget* strength;
+};
+
+int run_changepw(const char* label, const char* accounts)
+{
+    load_css();
+    GtkWidget* d = gtk_dialog_new_with_buttons("Change password", nullptr, GTK_DIALOG_MODAL,
+                                               "_Cancel", GTK_RESPONSE_CANCEL, "_Change",
+                                               GTK_RESPONSE_OK, nullptr);
+    gtk_window_set_default_size(GTK_WINDOW(d), 460, -1);
+    GtkWidget* ok = gtk_dialog_get_widget_for_response(GTK_DIALOG(d), GTK_RESPONSE_OK);
+    add_class(ok, "suggested-action");
+    gtk_widget_set_sensitive(ok, FALSE);
+    GtkWidget* box = gtk_dialog_get_content_area(GTK_DIALOG(d));
+    gtk_container_set_border_width(GTK_CONTAINER(box), 18);
+    gtk_box_set_spacing(GTK_BOX(box), 10);
+
+    GtkWidget* heading = gtk_label_new(nullptr);
+    char* m = g_markup_printf_escaped("Change the password for\n<b>%s</b>", label ? label : "");
+    gtk_label_set_markup(GTK_LABEL(heading), m);
+    g_free(m);
+    gtk_label_set_xalign(GTK_LABEL(heading), 0.0f);
+    gtk_box_pack_start(GTK_BOX(box), heading, FALSE, FALSE, 0);
+
+    GtkWidget* account_combo = nullptr;
+    if (accounts && std::strcmp(accounts, "adminuser") == 0) {
+        account_combo = gtk_combo_box_text_new();
+        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(account_combo), "user", "User password");
+        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(account_combo), "admin", "Admin password");
+        gtk_combo_box_set_active_id(GTK_COMBO_BOX(account_combo), "user");
+        gtk_box_pack_start(GTK_BOX(box), account_combo, FALSE, FALSE, 0);
+    }
+
+    GtkWidget* grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+    auto mklabel = [](const char* t) {
+        GtkWidget* l = gtk_label_new(t);
+        gtk_label_set_xalign(GTK_LABEL(l), 0.0f);
+        return l;
+    };
+    GtkWidget* old_pw = gtk_entry_new();
+    gtk_entry_set_visibility(GTK_ENTRY(old_pw), FALSE);
+    gtk_widget_set_hexpand(old_pw, TRUE);
+    static ChangeCtx ctx;
+    ctx.ok = ok;
+    ctx.new_pw = gtk_entry_new();
+    gtk_entry_set_visibility(GTK_ENTRY(ctx.new_pw), FALSE);
+    ctx.confirm = gtk_entry_new();
+    gtk_entry_set_visibility(GTK_ENTRY(ctx.confirm), FALSE);
+    ctx.strength = gtk_label_new(nullptr);
+    gtk_label_set_xalign(GTK_LABEL(ctx.strength), 0.0f);
+    gtk_grid_attach(GTK_GRID(grid), mklabel("Current"), 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), old_pw, 1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), mklabel("New"), 0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), ctx.new_pw, 1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), mklabel("Confirm"), 0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), ctx.confirm, 1, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), ctx.strength, 1, 3, 1, 1);
+    gtk_box_pack_start(GTK_BOX(box), grid, FALSE, FALSE, 0);
+
+    GCallback on_change = G_CALLBACK(+[](GtkEditable*, gpointer) {
+        const char* np = gtk_entry_get_text(GTK_ENTRY(ctx.new_pw));
+        const char* cf = gtk_entry_get_text(GTK_ENTRY(ctx.confirm));
+        const char* name = "";
+        strength_score(np, &name);
+        char buf[128];
+        if (!np[0])
+            buf[0] = '\0';
+        else if (std::strlen(np) < 6)
+            std::snprintf(buf, sizeof buf, "<small>At least 6 characters</small>");
+        else
+            std::snprintf(buf, sizeof buf, "<small>Strength: <b>%s</b></small>", name);
+        gtk_label_set_markup(GTK_LABEL(ctx.strength), buf);
+        gtk_widget_set_sensitive(ctx.ok, std::strlen(np) >= 6 && std::strcmp(np, cf) == 0);
+    });
+    g_signal_connect(ctx.new_pw, "changed", on_change, nullptr);
+    g_signal_connect(ctx.confirm, "changed", on_change, nullptr);
+
+    gtk_widget_show_all(d);
+    int resp = gtk_dialog_run(GTK_DIALOG(d));
+    int rc = 1;
+    if (resp == GTK_RESPONSE_OK) {
+        if (account_combo)
+            emit("account", gtk_combo_box_get_active_id(GTK_COMBO_BOX(account_combo)));
+        emit("old", gtk_entry_get_text(GTK_ENTRY(old_pw)));
+        emit("new", gtk_entry_get_text(GTK_ENTRY(ctx.new_pw)));
+        rc = 0;
+    }
+    gtk_widget_destroy(d);
+    return rc;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -653,6 +813,10 @@ int main(int argc, char** argv)
                           arg_value(argc, argv, "--note"));
     if (std::strcmp(argv[1], "setup") == 0)
         return run_setup(label);
+    if (std::strcmp(argv[1], "format") == 0)
+        return run_format(label);
+    if (std::strcmp(argv[1], "changepw") == 0)
+        return run_changepw(label, arg_value(argc, argv, "--accounts"));
     std::fprintf(stderr, "ironkey-gui: unknown command '%s'\n", argv[1]);
     return 2;
 }

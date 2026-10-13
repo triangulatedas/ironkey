@@ -143,6 +143,12 @@ int main(int argc, char** argv)
                     // the event-loop thread. It is self-contained, so detach it.
                     std::thread(run_setup_wizard, std::move(port), dry).detach();
                 },
+            .open = [](std::string port) { std::thread(open_data_disk, std::move(port)).detach(); },
+            .change_pw =
+                [](std::string port) {
+                    std::thread(run_change_password_op, std::move(port)).detach();
+                },
+            .format = [](std::string port) { std::thread(run_format_op, std::move(port)).detach(); },
             .quit = [&quit] { quit = true; },
         });
         tray.start();

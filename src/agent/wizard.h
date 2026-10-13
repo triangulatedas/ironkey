@@ -13,4 +13,14 @@ namespace ironkey {
 // dialog sequence but does NOT erase or write to the drive.
 void run_setup_wizard(std::string port, bool dry_run);
 
+// Unlocked-drive menu actions, each blocking (they drive a dialog and then a
+// device operation), so run them on a background thread like the wizard.
+// Open the drive's mounted volume in the file manager.
+void open_data_disk(std::string port);
+// Change a password in place (GTK dialog → change_password_device). Needs the
+// current password; this is NOT the admin-resets-user operation.
+void run_change_password_op(std::string port);
+// Create a filesystem on the unlocked data disk (GTK dialog → format_data_disk).
+void run_format_op(std::string port);
+
 }  // namespace ironkey

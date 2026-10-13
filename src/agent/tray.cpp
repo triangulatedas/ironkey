@@ -209,36 +209,23 @@ void Tray::rebuild_items()
             sub.children.push_back({id++, Kind::Separator, "", "", Act::None, true, {}});
         }
 
-        Item primary;
-        primary.id = id++;
-        primary.kind = Kind::Action;
-        primary.port = d.port;
-        if (d.unlocked) {
-            primary.label = "Lock && eject";  // "&&" renders as one "&"
-            primary.action = Act::Lock;
-        } else {
-            primary.label = "Unlock…";
-            primary.action = Act::Unlock;
-        }
-        sub.children.push_back(std::move(primary));
-
-        if (!d.unlocked) {
-            Item hint;
-            hint.id = id++;
-            hint.kind = Kind::Action;
-            hint.port = d.port;
-            hint.label = "Show password hint";
-            hint.action = Act::ShowHint;
-            sub.children.push_back(std::move(hint));
-
+        auto child = [&](const char* label, Act act) {
+            sub.children.push_back({id++, Kind::Action, label, d.port, act, true, {}});
+        };
+        auto sep = [&] {
             sub.children.push_back({id++, Kind::Separator, "", "", Act::None, true, {}});
-            Item setup;
-            setup.id = id++;
-            setup.kind = Kind::Action;
-            setup.port = d.port;
-            setup.label = "Reset / Set up…";
-            setup.action = Act::Setup;
-            sub.children.push_back(std::move(setup));
+        };
+        if (d.unlocked) {
+            child("Open", Act::Open);
+            child("Lock && eject", Act::Lock);  // "&&" renders as one "&"
+            sep();
+            child("Change password…", Act::ChangePw);
+            child("Format…", Act::Format);
+        } else {
+            child("Unlock…", Act::Unlock);
+            child("Show password hint", Act::ShowHint);
+            sep();
+            child("Reset / Set up…", Act::Setup);
         }
 
         items_.push_back(std::move(sub));
@@ -454,6 +441,18 @@ int Tray::menu_event(sd_bus_message* m, void* userdata, sd_bus_error*)
             case Act::Setup:
                 if (self->cb_.setup)
                     self->cb_.setup(it->port);
+                break;
+            case Act::Open:
+                if (self->cb_.open)
+                    self->cb_.open(it->port);
+                break;
+            case Act::ChangePw:
+                if (self->cb_.change_pw)
+                    self->cb_.change_pw(it->port);
+                break;
+            case Act::Format:
+                if (self->cb_.format)
+                    self->cb_.format(it->port);
                 break;
             case Act::Quit:
                 if (self->cb_.quit)

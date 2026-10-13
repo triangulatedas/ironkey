@@ -450,4 +450,141 @@ void run_setup_wizard(std::string port, bool dry_run)
     wipe(req);
 }
 
+// ---- unlocked-drive menu actions -------------------------------------------
+
+void open_data_disk(std::string port)
+{
+    UsbDevice dev;
+    if (!find_drive(port, dev) || !dev.is_unlocked()) {
+        notify("IronKey", "The drive is not unlocked.", true);
+        return;
+    }
+    // Find the mount point of one of the drive's data partitions.
+    std::string mount;
+    if (FILE* f = std::fopen("/proc/mounts", "re")) {
+        char src[512], tgt[512];
+        while (std::fscanf(f, "%511s %511s %*[^\n]\n", src, tgt) == 2) {
+            std::string s(src);
+            for (const auto& d : dev.disks)
+                if (!d.node.empty() && s.rfind(d.node, 0) == 0) {  // src starts with disk node
+                    mount = tgt;
+                    break;
+                }
+            if (!mount.empty())
+                break;
+        }
+        std::fclose(f);
+    }
+    if (mount.empty()) {
+        notify("IronKey", "Could not find the drive's mounted folder.", true);
+        return;
+    }
+    spawn_capture("xdg-open", {mount});
+}
+
+void run_change_password_op(std::string port)
+{
+    UsbDevice dev;
+    if (!find_drive(port, dev)) {
+        notify("IronKey", "The drive is no longer connected.", true);
+        return;
+    }
+    const std::string desc = short_desc(dev);
+    bool admin_user = read_device_summary(dev).setup == PasswordSetup::AdminAndUser;
+
+    Captured c = admin_user
+                     ? spawn_capture(find_gui(), {"changepw", "--label", desc, "--accounts",
+                                                  "adminuser"})
+                     : spawn_capture(find_gui(), {"changepw", "--label", desc});
+    if (!c.spawned || c.exit_code == 127) {
+        notify("IronKey", "The GTK dialog (ironkey-gui) is not available. Use "
+                          "`ironkey-unlock change-password`.",
+               true);
+        return;
+    }
+    if (c.exit_code != 0)
+        return;  // cancelled
+
+    std::string old_pw, new_pw, acc = "user";
+    size_t pos = 0;
+    while (pos < c.out.size()) {
+        size_t nl = c.out.find('\n', pos);
+        std::string line = c.out.substr(pos, nl - pos);
+        pos = (nl == std::string::npos) ? c.out.size() : nl + 1;
+        auto eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+        if (k == "old")
+            old_pw = v;
+        else if (k == "new")
+            new_pw = v;
+        else if (k == "account")
+            acc = v;
+    }
+    secure_wipe(c.out.data(), c.out.capacity());
+    Account account = Account::Admin;
+    if (admin_user)
+        account = (acc == "admin") ? Account::Admin : Account::User;
+
+    try {
+        UsbDevice fresh;
+        if (!find_drive(port, fresh))
+            throw IronKeyError("the drive is no longer connected");
+        ensure_hid_mode(fresh, [](const std::string&) {});
+        Login login = choose_login(read_drive_status(fresh), account);
+        change_password_device(fresh, old_pw, new_pw, login, [](const std::string&) {});
+        notify("IronKey", "Password changed. Unlock the drive to use it.");
+    } catch (const std::exception& e) {
+        notify("IronKey", std::string("Could not change the password: ") + e.what(), true);
+    }
+    wipe(old_pw);
+    wipe(new_pw);
+}
+
+void run_format_op(std::string port)
+{
+    UsbDevice dev;
+    if (!find_drive(port, dev) || !dev.is_unlocked()) {
+        notify("IronKey", "Unlock the drive before formatting.", true);
+        return;
+    }
+    const std::string desc = short_desc(dev);
+    Captured c = spawn_capture(find_gui(), {"format", "--label", desc});
+    if (!c.spawned || c.exit_code == 127) {
+        notify("IronKey",
+               "The GTK dialog (ironkey-gui) is not available. Use `ironkey-unlock format`.", true);
+        return;
+    }
+    if (c.exit_code != 0)
+        return;  // cancelled
+
+    std::string fstype, label = "IRONKEY";
+    size_t pos = 0;
+    while (pos < c.out.size()) {
+        size_t nl = c.out.find('\n', pos);
+        std::string line = c.out.substr(pos, nl - pos);
+        pos = (nl == std::string::npos) ? c.out.size() : nl + 1;
+        auto eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+        if (k == "format")
+            fstype = v;
+        else if (k == "label")
+            label = v;
+    }
+    if (fstype != "exfat" && fstype != "vfat" && fstype != "ext4")
+        return;
+    try {
+        UsbDevice fresh;
+        if (!find_drive(port, fresh) || !fresh.is_unlocked())
+            throw IronKeyError("the drive is no longer unlocked");
+        std::string node = format_data_disk(fresh, fstype, label);
+        notify("IronKey ready", "Formatted " + node + " as " + fstype + ".");
+    } catch (const std::exception& e) {
+        notify("IronKey", std::string("Format failed: ") + e.what(), true);
+    }
+}
+
 }  // namespace ironkey
