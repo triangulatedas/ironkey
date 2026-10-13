@@ -3,13 +3,16 @@
 Unlock, reset, format and manage Kingston IronKey Locker+ G2 encrypted USB
 drives on Linux — without root (for the common path) and without Python.
 
-Kingston only ships management software for Windows and macOS. This project
-began as a C++ rewrite of
+Kingston only ships management software for Windows and macOS. This project was
+inspired by
 [ironkey-unlocker](https://github.com/wltechblog/ironkey-unlocker), the Python
-tool that first made these drives *unlockable* on Linux, and grew into a fuller
-management tool: forgot-password reset, passphrase mode, owner-info read/write,
-filesystem creation, and an optional replug-free SCSI path — each
-reverse-engineered for this project (unlock's byte-level protocol is in
+tool that first made these drives *unlockable* on Linux. It started as a C++ port
+of that unlock and has since grown into a much broader, largely independent
+management tool: forgot-password reset, passphrase mode, admin + user account
+provisioning, owner-info read/write, filesystem creation, a non-disruptive status
+read, a desktop session agent, and an optional replug-free SCSI path. Only the
+unlock path is shared with the original; everything else was reverse-engineered
+separately for this project (unlock's byte-level protocol is in
 [PROTOCOL.md](PROTOCOL.md); the newer findings are described below and in the
 commit history).
 
@@ -47,10 +50,13 @@ The result was a single Python script, `ironkey_unlock.py`, run with `sudo`:
 4. Send the encrypted PVC key and the AES-encrypted password, then commit.
 5. Wait for the encrypted data partition to appear.
 
-The full byte-level protocol is documented in [PROTOCOL.md](PROTOCOL.md),
-copied from the original project. All credit for the reverse engineering goes
-to the original author. This project changes only how the protocol is packaged
-and used.
+The unlock byte-level protocol is documented in [PROTOCOL.md](PROTOCOL.md),
+originally from that project. **All credit for reverse-engineering the unlock
+protocol goes to the original author** — it is the foundation everything here
+builds on. For unlock, this project changes only how that protocol is packaged
+and used; the rest of the feature set (reset, passphrase derivation, admin + user
+provisioning, owner info, status queries, the SCSI transport) was
+reverse-engineered separately and is documented in PROTOCOL.md and the commits.
 
 ## What this version changes
 
@@ -259,9 +265,10 @@ is mounted by the desktop as usual and a notification shows which disk it is.
   Files, or `ironkey-unlock lock`).
 - After a failed attempt the dialog comes back with the failure count and a
   warning. Passwords are never retried automatically.
-- `ironkey-agent --user` logs in with the user password on drives set up with
-  admin and user passwords. The default is the admin password, or the only
-  password on single-password drives.
+- On a drive set up with admin and user passwords, the agent defaults to the
+  **user** password (as the vendor software does); `ironkey-agent --admin`
+  selects the admin password. A single-password drive just uses its one password
+  and shows no account wording.
 - `ironkey-agent --dry-run` detects drives and shows the dialog, but never
   sends anything to a drive. Use it for testing.
 
@@ -278,6 +285,7 @@ ironkey-unlock change-password             # change a password in place (admin o
 ironkey-unlock reset                       # forgot-password: ERASE and set a new password
 ironkey-unlock reset --name N --company C --admin-hint H   # also store owner info
 ironkey-unlock reset --scsi / --hid        # force the transport (default: auto)
+ironkey-unlock status                      # show setup (admin-only / admin+user), failed count, name — no unlock
 ironkey-unlock info                        # show owner info (name/company/hints), no unlock
 ironkey-unlock format --fs ext4 --label X  # create a filesystem on the unlocked data disk
 ironkey-unlock lock [--device PORT]        # unmount and power off, which locks the drive
@@ -321,10 +329,11 @@ Tested with a Locker+50G2 (64 GB): locked PID `0951:159d`, HID mode PID
 The drive reports wrong passwords and keeps a failed-login counter that can
 be read without logging in; both tools show it (see
 [PROTOCOL.md](PROTOCOL.md#status-queries-ff-21-ff-a0)). With separate admin and
-user passwords set, `--admin` (default, index 0) and `--user` (index 1) both
-unlock on hardware. The default is admin because the tools can't yet tell a
-single-password drive (where index 0 is the only password) from an admin+user
-one.
+user passwords set, both `--admin` (index 0) and `--user` (index 1) unlock on
+hardware. The tools read the account setup from `account_flags` (GetAreaParams
+`0x1F`: `0x07` = admin + user, `0x03` = single) and default to the **user**
+account on an admin + user drive — as the vendor software does — while a
+single-password drive uses its one password with no account wording.
 The drive keeps its USB port path and serial across the switch. Other
 capacities (16G2, 32G2, …) use other PIDs. Devices are recognised by vendor ID
 and product name, so they are expected to work, but have not been tested.
