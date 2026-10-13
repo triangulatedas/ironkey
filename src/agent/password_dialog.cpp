@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <sstream>
 #include <vector>
 
@@ -44,6 +45,23 @@ std::string escape_markup(const std::string& s)
     return out;
 }
 
+// $IRONKEY_GUI, else next to this executable, else "ironkey-gui" on PATH.
+std::string find_gui()
+{
+    if (const char* e = std::getenv("IRONKEY_GUI"))
+        return e;
+    char buf[4096];
+    ssize_t n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        std::string p(buf);
+        auto slash = p.rfind('/');
+        if (slash != std::string::npos)
+            return p.substr(0, slash + 1) + "ironkey-gui";
+    }
+    return "ironkey-gui";
+}
+
 }  // namespace
 
 std::string PasswordDialog::program()
@@ -57,34 +75,24 @@ std::string PasswordDialog::program()
     return {};
 }
 
-std::optional<std::string> PasswordDialog::ask(const std::string& title, const std::string& text)
+PasswordDialog::Capture PasswordDialog::run_capture(const std::vector<std::string>& args)
 {
-    std::string prog = program();
-    if (prog.empty())
-        return std::nullopt;
-
-    std::vector<std::string> args;
-    if (prog == "zenity")
-        args = {"zenity", "--entry", "--hide-text", "--width=420", "--title", title,
-                "--text", escape_markup(text), "--ok-label", "Unlock"};
-    else
-        args = {"kdialog", "--title", title, "--password", text};
-
+    Capture cap;
     std::vector<char*> argv;
+    argv.reserve(args.size() + 1);
     for (auto& a : args)
-        argv.push_back(a.data());
+        argv.push_back(const_cast<char*>(a.c_str()));
     argv.push_back(nullptr);
 
     int pipefd[2];
     if (::pipe2(pipefd, O_CLOEXEC) < 0)
-        return std::nullopt;
+        return cap;
 
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
     posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO);
-
-    // The agent blocks SIGTERM for its own signal handling; the dialog must
-    // not inherit that, or cancel() could not close it.
+    // The agent blocks SIGTERM for its own handling; the dialog must not inherit
+    // that, or cancel() could not close it.
     posix_spawnattr_t attr;
     posix_spawnattr_init(&attr);
     sigset_t empty;
@@ -105,16 +113,16 @@ std::optional<std::string> PasswordDialog::ask(const std::string& title, const s
     ::close(pipefd[1]);
     if (rc != 0) {
         ::close(pipefd[0]);
-        return std::nullopt;
+        return cap;
     }
 
-    std::string password;
-    password.reserve(256);
-    char buf[64];
+    cap.spawned = true;
+    cap.out.reserve(256);
+    char buf[128];
     ssize_t n;
     while ((n = ::read(pipefd[0], buf, sizeof buf)) > 0 || (n < 0 && errno == EINTR))
         if (n > 0)
-            password.append(buf, static_cast<size_t>(n));
+            cap.out.append(buf, static_cast<size_t>(n));
     secure_wipe(buf, sizeof buf);
     ::close(pipefd[0]);
 
@@ -125,14 +133,90 @@ std::optional<std::string> PasswordDialog::ask(const std::string& title, const s
         std::lock_guard lock(mutex_);
         pid_ = -1;
     }
+    cap.code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    return cap;
+}
 
-    if (!password.empty() && password.back() == '\n')
-        password.pop_back();
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        secure_wipe(password.data(), password.capacity());
+std::optional<std::string> PasswordDialog::ask(const std::string& title, const std::string& text)
+{
+    std::string prog = program();
+    if (prog.empty())
+        return std::nullopt;
+
+    std::vector<std::string> args;
+    if (prog == "zenity")
+        args = {"zenity",       "--entry", "--hide-text", "--width=440", "--title", title, "--text",
+                escape_markup(text)};
+    else
+        args = {"kdialog", "--title", title, "--password", text};
+
+    Capture cap = run_capture(args);
+    if (!cap.spawned || cap.code != 0) {
+        secure_wipe(cap.out.data(), cap.out.capacity());
         return std::nullopt;
     }
-    return password;
+    if (!cap.out.empty() && cap.out.back() == '\n')
+        cap.out.pop_back();
+    return cap.out;
+}
+
+std::optional<PasswordDialog::UnlockChoice> PasswordDialog::ask_unlock(const std::string& label,
+                                                                       bool admin_user,
+                                                                       std::optional<Account> forced,
+                                                                       const std::string& note)
+{
+    Account def = forced ? *forced : (admin_user ? Account::User : Account::Admin);
+
+    // Prefer the GTK front-end (ironkey-gui unlock).
+    std::vector<std::string> args = {find_gui(), "unlock", "--label", label};
+    if (admin_user && !forced) {
+        args.push_back("--accounts");
+        args.push_back("adminuser");
+    }
+    if (!note.empty()) {
+        args.push_back("--note");
+        args.push_back(note);
+    }
+    Capture cap = run_capture(args);
+    if (cap.spawned && cap.code != 127) {
+        if (cap.code != 0) {  // cancelled
+            secure_wipe(cap.out.data(), cap.out.capacity());
+            return std::nullopt;
+        }
+        UnlockChoice choice;
+        choice.account = def;
+        size_t pos = 0;
+        while (pos < cap.out.size()) {
+            size_t nl = cap.out.find('\n', pos);
+            std::string line = cap.out.substr(pos, nl - pos);
+            pos = (nl == std::string::npos) ? cap.out.size() : nl + 1;
+            auto eq = line.find('=');
+            if (eq == std::string::npos)
+                continue;
+            std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+            if (k == "password")
+                choice.password = v;
+            else if (k == "account")
+                choice.account = (v == "admin") ? Account::Admin : Account::User;
+        }
+        secure_wipe(cap.out.data(), cap.out.capacity());
+        return choice;
+    }
+
+    // Fallback: zenity/kdialog for the password only (account = forced/default).
+    std::string text = (note.empty() ? "" : note + "\n\n") + "Enter the " +
+                       std::string(def == Account::User ? "user password"
+                                   : admin_user          ? "admin password"
+                                                         : "password") +
+                       " for " + label;
+    auto pw = ask("Unlock IronKey", text);
+    if (!pw)
+        return std::nullopt;
+    UnlockChoice choice;
+    choice.password = *pw;
+    choice.account = def;
+    secure_wipe(pw->data(), pw->capacity());
+    return choice;
 }
 
 void PasswordDialog::cancel()

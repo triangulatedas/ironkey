@@ -163,8 +163,6 @@ void Agent::run(Worker& w, const std::string& port, DryRun dry_run,
 
     try {
         check_access(dev);
-        if (PasswordDialog::program().empty())
-            throw IronKeyError("No password dialog available. Install zenity or kdialog.");
 
         // Read the drive's setup and failed-login count without disrupting it
         // (over SCSI when it is locked in storage mode); switching to HID mode is
@@ -184,65 +182,66 @@ void Agent::run(Worker& w, const std::string& port, DryRun dry_run,
                 status = read_drive_status(dev);
             }
         }
-        Login login = choose_login(status, account);
-        log(port, "Logging in with the " + login.password_name());
-
+        // The dialog offers an admin/user toggle only on a two-account drive and
+        // only when the account was not forced on the command line.
+        bool admin_user = status.setup == PasswordSetup::AdminAndUser;
         std::string device_label = summary.owner_name.empty()
                                        ? describe(dev)
                                        : summary.owner_name + " — " + describe(dev);
-        auto prompt = [&login, &device_label](const std::string& note) {
-            return (note.empty() ? "" : note + "\n\n") + "Enter the " + login.password_name() +
-                   " for " + device_label + ", or cancel to leave it locked.";
-        };
+
+        // A provisional login (forced or defaulted account) only for the
+        // failed-count warning shown before the first prompt.
+        Login pre = choose_login(status, account);
         std::string note;
-        if (auto failed = login.failed_attempts(status); failed && *failed > 0) {
-            log(port, login.failed_warning(*failed));
-            note = "Warning: " + login.failed_warning(*failed) + ".";
+        if (auto failed = pre.failed_attempts(status); failed && *failed > 0) {
+            log(port, pre.failed_warning(*failed));
+            note = "Warning: " + pre.failed_warning(*failed) + ".";
         }
-        std::string message = prompt(note);
 
         for (;;) {
             w.state = State::Prompting;
-            auto password = w.dialog.ask("Unlock IronKey", message);
+            auto choice = w.dialog.ask_unlock(device_label, admin_user, account, note);
             if (w.cancelled)
                 return finish(State::Gone);
-            if (!password) {
+            if (!choice) {
                 log(port, "Password prompt cancelled; leaving the drive locked");
                 return finish(State::Done);
             }
 
-            if (password->empty() || password->size() > kMaxPassphraseBytes) {
-                secure_wipe(password->data(), password->capacity());
-                message = prompt("The password must be 1 to 64 characters. Nothing was sent to "
-                                 "the drive.");
+            if (choice->password.empty() || choice->password.size() > kMaxPassphraseBytes) {
+                secure_wipe(choice->password.data(), choice->password.capacity());
+                note = "The password must be 1 to 64 characters. Nothing was sent to the drive.";
                 continue;
             }
+            Login login = choose_login(status, choice->account);
 
             try {
                 if (dry_run != DryRun::Off) {
-                    log(port, "DRY RUN: password entered (" + std::to_string(password->size()) +
+                    log(port, "DRY RUN: password entered (" +
+                                  std::to_string(choice->password.size()) +
                                   " bytes); nothing sent to the drive");
                     // Goes through the same handler as a real failed unlock.
                     if (dry_run == DryRun::Fail)
                         throw NotUnlockedError("DRY RUN: simulated wrong password", true);
-                    secure_wipe(password->data(), password->capacity());
+                    secure_wipe(choice->password.data(), choice->password.capacity());
                     notify("IronKey dry run", "Password entered for " + describe(dev) +
                                                   ". Nothing was sent to the drive.");
                     return finish(State::Done);
                 }
 
+                log(port, "Logging in with the " + login.password_name());
                 w.state = State::Switching;
                 ensure_hid_mode(dev, worker_log);
                 w.state = State::Unlocking;
-                unlock_device(dev, *password, login, worker_log);
-                secure_wipe(password->data(), password->capacity());
+                unlock_device(dev, choice->password, login, worker_log);
+                secure_wipe(choice->password.data(), choice->password.capacity());
             } catch (const NotUnlockedError& e) {
-                secure_wipe(password->data(), password->capacity());
+                secure_wipe(choice->password.data(), choice->password.capacity());
                 log(port, e.what());
-                message = prompt(std::string(e.what()) + ".");
+                note = std::string(e.what()) + ".";
                 continue;
             } catch (...) {
-                secure_wipe(password->data(), password->capacity());
+                secure_wipe(choice->password.data(), choice->password.capacity());
                 throw;
             }
 
