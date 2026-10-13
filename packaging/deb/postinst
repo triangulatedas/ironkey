@@ -1,0 +1,30 @@
+#!/bin/sh
+# Post-install for the `ironkey` package. Handles the three bits a .deb archive
+# cannot carry itself: the file capability on the SCSI helper, the udev reload,
+# and enabling the systemd *user* service for all users. All best-effort — the
+# tool works without any of them (it just falls back to the HID path / manual
+# start), so a failure here must not fail the install.
+set -e
+
+if [ "$1" = "configure" ]; then
+    # Replug-free SCSI path needs CAP_SYS_RAWIO on the helper. Optional: without
+    # it, reset falls back to the HID path (one physical replug).
+    if command -v setcap >/dev/null 2>&1; then
+        setcap cap_sys_rawio+ep /usr/bin/ironkey-scsi-helper 2>/dev/null \
+            || echo "ironkey: could not set CAP_SYS_RAWIO on the SCSI helper; the replug-free SCSI reset will fall back to HID." >&2
+    fi
+
+    # Apply the udev uaccess rule so the drive's nodes are reachable without root.
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules 2>/dev/null || true
+        udevadm trigger --subsystem-match=usb 2>/dev/null || true
+    fi
+
+    # Enable the agent for every user's graphical session (opt out with
+    # `systemctl --global disable ironkey-agent`).
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --global enable ironkey-agent.service 2>/dev/null || true
+    fi
+fi
+
+exit 0
