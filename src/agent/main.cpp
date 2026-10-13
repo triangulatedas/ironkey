@@ -11,10 +11,13 @@
 #include <cstring>
 #include <string_view>
 
+#include <thread>
+
 #include "agent/agent.h"
 #include "agent/notify.h"
 #include "agent/password_dialog.h"
 #include "agent/tray.h"
+#include "agent/wizard.h"
 #include "linux/device_ops.h"
 #include "linux/udev_monitor.h"
 #include "linux/usb_topology.h"
@@ -133,6 +136,12 @@ int main(int argc, char** argv)
                                hint.empty() ? "No password hint is stored on this drive." : hint);
                         return;
                     }
+                },
+            .setup =
+                [dry = dry_run != Agent::DryRun::Off](std::string port) {
+                    // The wizard blocks on zenity dialogs, so it must not run on
+                    // the event-loop thread. It is self-contained, so detach it.
+                    std::thread(run_setup_wizard, std::move(port), dry).detach();
                 },
             .quit = [&quit] { quit = true; },
         });

@@ -34,6 +34,7 @@ public:
         std::function<void(std::string port)> unlock;     // user picked Unlock
         std::function<void(std::string port)> lock;       // user picked Lock & eject
         std::function<void(std::string port)> show_hint;  // user picked Show hint
+        std::function<void(std::string port)> setup;      // user picked Reset / Set up
         std::function<void()> quit;                        // user picked Quit
     };
 
@@ -62,7 +63,7 @@ private:
     // dbusmenu item model (a shallow tree), rebuilt from cb_.list() on each
     // layout request. A Submenu item carries children; the root is a Submenu.
     enum class Kind { Action, Separator, Submenu };
-    enum class Act { Unlock, Lock, ShowHint, Quit, None };
+    enum class Act { Unlock, Lock, ShowHint, Setup, Quit, None };
     struct Item {
         int id;
         Kind kind;

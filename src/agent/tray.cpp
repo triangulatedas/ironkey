@@ -230,6 +230,15 @@ void Tray::rebuild_items()
             hint.label = "Show password hint";
             hint.action = Act::ShowHint;
             sub.children.push_back(std::move(hint));
+
+            sub.children.push_back({id++, Kind::Separator, "", "", Act::None, true, {}});
+            Item setup;
+            setup.id = id++;
+            setup.kind = Kind::Action;
+            setup.port = d.port;
+            setup.label = "Reset / Set up…";
+            setup.action = Act::Setup;
+            sub.children.push_back(std::move(setup));
         }
 
         items_.push_back(std::move(sub));
@@ -441,6 +450,10 @@ int Tray::menu_event(sd_bus_message* m, void* userdata, sd_bus_error*)
             case Act::ShowHint:
                 if (self->cb_.show_hint)
                     self->cb_.show_hint(it->port);
+                break;
+            case Act::Setup:
+                if (self->cb_.setup)
+                    self->cb_.setup(it->port);
                 break;
             case Act::Quit:
                 if (self->cb_.quit)
