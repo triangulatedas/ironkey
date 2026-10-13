@@ -542,6 +542,60 @@ void run_change_password_op(std::string port)
     wipe(new_pw);
 }
 
+void run_reset_user_password_op(std::string port)
+{
+    UsbDevice dev;
+    if (!find_drive(port, dev)) {
+        notify("IronKey", "The drive is no longer connected.", true);
+        return;
+    }
+    if (read_device_summary(dev).setup != PasswordSetup::AdminAndUser) {
+        notify("IronKey", "This drive has no separate user account to reset.", true);
+        return;
+    }
+    const std::string desc = short_desc(dev);
+    Captured c = spawn_capture(find_gui(), {"resetuserpw", "--label", desc});
+    if (!c.spawned || c.exit_code == 127) {
+        notify("IronKey", "The GTK dialog (ironkey-gui) is not available. Use "
+                          "`ironkey-unlock reset-user-password`.",
+               true);
+        return;
+    }
+    if (c.exit_code != 0)
+        return;  // cancelled
+
+    std::string admin, new_user;
+    size_t pos = 0;
+    while (pos < c.out.size()) {
+        size_t nl = c.out.find('\n', pos);
+        std::string line = c.out.substr(pos, nl - pos);
+        pos = (nl == std::string::npos) ? c.out.size() : nl + 1;
+        auto eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+        if (k == "admin")
+            admin = v;
+        else if (k == "new")
+            new_user = v;
+    }
+    secure_wipe(c.out.data(), c.out.capacity());
+    try {
+        UsbDevice fresh;
+        if (!find_drive(port, fresh))
+            throw IronKeyError("the drive is no longer connected");
+        ensure_hid_mode(fresh, [](const std::string&) {});
+        reset_user_password_device(fresh, admin, new_user, [](const std::string&) {});
+        notify("IronKey", "User password reset. The user can unlock with the new password.");
+    } catch (const WrongPasswordError&) {
+        notify("IronKey", "The admin password is wrong; nothing was changed.", true);
+    } catch (const std::exception& e) {
+        notify("IronKey", std::string("Could not reset the user password: ") + e.what(), true);
+    }
+    wipe(admin);
+    wipe(new_user);
+}
+
 void run_format_op(std::string port)
 {
     UsbDevice dev;

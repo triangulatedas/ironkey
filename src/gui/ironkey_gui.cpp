@@ -798,6 +798,95 @@ int run_changepw(const char* label, const char* accounts)
     return rc;
 }
 
+// ======================= reset-user-password dialog =========================
+
+int run_resetuserpw(const char* label)
+{
+    load_css();
+    GtkWidget* d = gtk_dialog_new_with_buttons("Reset user password", nullptr, GTK_DIALOG_MODAL,
+                                               "_Cancel", GTK_RESPONSE_CANCEL, "_Reset",
+                                               GTK_RESPONSE_OK, nullptr);
+    gtk_window_set_default_size(GTK_WINDOW(d), 470, -1);
+    GtkWidget* ok = gtk_dialog_get_widget_for_response(GTK_DIALOG(d), GTK_RESPONSE_OK);
+    add_class(ok, "suggested-action");
+    gtk_widget_set_sensitive(ok, FALSE);
+    GtkWidget* box = gtk_dialog_get_content_area(GTK_DIALOG(d));
+    gtk_container_set_border_width(GTK_CONTAINER(box), 18);
+    gtk_box_set_spacing(GTK_BOX(box), 10);
+
+    GtkWidget* heading = gtk_label_new(nullptr);
+    char* m = g_markup_printf_escaped(
+        "Set a new <b>user</b> password on\n<b>%s</b>.\n\n<small>Uses the admin password — the "
+        "user's old password is not needed. The data is not erased.</small>",
+        label ? label : "");
+    gtk_label_set_markup(GTK_LABEL(heading), m);
+    g_free(m);
+    gtk_label_set_xalign(GTK_LABEL(heading), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(heading), TRUE);
+    gtk_box_pack_start(GTK_BOX(box), heading, FALSE, FALSE, 0);
+
+    GtkWidget* grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+    auto mklabel = [](const char* t) {
+        GtkWidget* l = gtk_label_new(t);
+        gtk_label_set_xalign(GTK_LABEL(l), 0.0f);
+        return l;
+    };
+    GtkWidget* admin = gtk_entry_new();
+    gtk_entry_set_visibility(GTK_ENTRY(admin), FALSE);
+    gtk_widget_set_hexpand(admin, TRUE);
+    static ChangeCtx ctx;
+    ctx.ok = ok;
+    ctx.new_pw = gtk_entry_new();
+    gtk_entry_set_visibility(GTK_ENTRY(ctx.new_pw), FALSE);
+    ctx.confirm = gtk_entry_new();
+    gtk_entry_set_visibility(GTK_ENTRY(ctx.confirm), FALSE);
+    ctx.strength = gtk_label_new(nullptr);
+    gtk_label_set_xalign(GTK_LABEL(ctx.strength), 0.0f);
+    static GtkWidget* admin_ref;
+    admin_ref = admin;
+    gtk_grid_attach(GTK_GRID(grid), mklabel("Admin password"), 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), admin, 1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), mklabel("New user password"), 0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), ctx.new_pw, 1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), mklabel("Confirm"), 0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), ctx.confirm, 1, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), ctx.strength, 1, 3, 1, 1);
+    gtk_box_pack_start(GTK_BOX(box), grid, FALSE, FALSE, 0);
+
+    GCallback on_change = G_CALLBACK(+[](GtkEditable*, gpointer) {
+        const char* np = gtk_entry_get_text(GTK_ENTRY(ctx.new_pw));
+        const char* cf = gtk_entry_get_text(GTK_ENTRY(ctx.confirm));
+        const char* ad = gtk_entry_get_text(GTK_ENTRY(admin_ref));
+        const char* name = "";
+        strength_score(np, &name);
+        char buf[128];
+        if (!np[0])
+            buf[0] = '\0';
+        else if (std::strlen(np) < 6)
+            std::snprintf(buf, sizeof buf, "<small>At least 6 characters</small>");
+        else
+            std::snprintf(buf, sizeof buf, "<small>Strength: <b>%s</b></small>", name);
+        gtk_label_set_markup(GTK_LABEL(ctx.strength), buf);
+        gtk_widget_set_sensitive(ctx.ok, ad[0] && std::strlen(np) >= 6 && std::strcmp(np, cf) == 0);
+    });
+    g_signal_connect(admin, "changed", on_change, nullptr);
+    g_signal_connect(ctx.new_pw, "changed", on_change, nullptr);
+    g_signal_connect(ctx.confirm, "changed", on_change, nullptr);
+
+    gtk_widget_show_all(d);
+    int resp = gtk_dialog_run(GTK_DIALOG(d));
+    int rc = 1;
+    if (resp == GTK_RESPONSE_OK) {
+        emit("admin", gtk_entry_get_text(GTK_ENTRY(admin)));
+        emit("new", gtk_entry_get_text(GTK_ENTRY(ctx.new_pw)));
+        rc = 0;
+    }
+    gtk_widget_destroy(d);
+    return rc;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -817,6 +906,8 @@ int main(int argc, char** argv)
         return run_format(label);
     if (std::strcmp(argv[1], "changepw") == 0)
         return run_changepw(label, arg_value(argc, argv, "--accounts"));
+    if (std::strcmp(argv[1], "resetuserpw") == 0)
+        return run_resetuserpw(label);
     std::fprintf(stderr, "ironkey-gui: unknown command '%s'\n", argv[1]);
     return 2;
 }

@@ -98,6 +98,7 @@ int main(int argc, char** argv)
                         // storage mode); the host asks only on menu open.
                         DeviceSummary s = read_device_summary(d);
                         std::string label = s.owner_name.empty() ? describe(d) : s.owner_name;
+                        bool admin_user = s.setup == PasswordSetup::AdminAndUser;
                         std::string status;
                         if (s.status_read) {
                             status = s.setup == PasswordSetup::AdminAndUser ? "Admin + user"
@@ -108,7 +109,7 @@ int main(int argc, char** argv)
                                           " of " + std::to_string(kDefaultMaxFailedAttempts) +
                                           " failed logins";
                         }
-                        out.push_back({d.port, label, d.is_unlocked(), status});
+                        out.push_back({d.port, label, d.is_unlocked(), admin_user, status});
                     }
                     return out;
                 },
@@ -149,6 +150,10 @@ int main(int argc, char** argv)
                     std::thread(run_change_password_op, std::move(port)).detach();
                 },
             .format = [](std::string port) { std::thread(run_format_op, std::move(port)).detach(); },
+            .reset_user_pw =
+                [](std::string port) {
+                    std::thread(run_reset_user_password_op, std::move(port)).detach();
+                },
             .quit = [&quit] { quit = true; },
         });
         tray.start();

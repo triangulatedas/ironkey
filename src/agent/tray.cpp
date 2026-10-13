@@ -220,11 +220,15 @@ void Tray::rebuild_items()
             child("Lock && eject", Act::Lock);  // "&&" renders as one "&"
             sep();
             child("Change password…", Act::ChangePw);
+            if (d.admin_user)
+                child("Reset user password…", Act::ResetUserPw);
             child("Format…", Act::Format);
         } else {
             child("Unlock…", Act::Unlock);
             child("Show password hint", Act::ShowHint);
             sep();
+            if (d.admin_user)
+                child("Reset user password…", Act::ResetUserPw);
             child("Reset / Set up…", Act::Setup);
         }
 
@@ -453,6 +457,10 @@ int Tray::menu_event(sd_bus_message* m, void* userdata, sd_bus_error*)
             case Act::Format:
                 if (self->cb_.format)
                     self->cb_.format(it->port);
+                break;
+            case Act::ResetUserPw:
+                if (self->cb_.reset_user_pw)
+                    self->cb_.reset_user_pw(it->port);
                 break;
             case Act::Quit:
                 if (self->cb_.quit)

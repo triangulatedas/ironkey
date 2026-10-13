@@ -22,5 +22,7 @@ void open_data_disk(std::string port);
 void run_change_password_op(std::string port);
 // Create a filesystem on the unlocked data disk (GTK dialog → format_data_disk).
 void run_format_op(std::string port);
+// Admin resets the user password (GTK dialog → reset_user_password_device).
+void run_reset_user_password_op(std::string port);
 
 }  // namespace ironkey

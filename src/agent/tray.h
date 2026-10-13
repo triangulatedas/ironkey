@@ -26,6 +26,7 @@ public:
         std::string port;   // USB port path, the stable id
         std::string label;  // human description (owner name / model / serial)
         bool unlocked = false;
+        bool admin_user = false;  // has a separate user account (reset-user-pw applies)
         std::string status; // one-line status for a disabled menu entry, or empty
     };
 
@@ -38,6 +39,7 @@ public:
         std::function<void(std::string port)> open;       // user picked Open (unlocked)
         std::function<void(std::string port)> change_pw;  // user picked Change password
         std::function<void(std::string port)> format;     // user picked Format
+        std::function<void(std::string port)> reset_user_pw;  // admin resets user password
         std::function<void()> quit;                        // user picked Quit
     };
 
@@ -66,7 +68,9 @@ private:
     // dbusmenu item model (a shallow tree), rebuilt from cb_.list() on each
     // layout request. A Submenu item carries children; the root is a Submenu.
     enum class Kind { Action, Separator, Submenu };
-    enum class Act { Unlock, Lock, ShowHint, Setup, Open, ChangePw, Format, Quit, None };
+    enum class Act {
+        Unlock, Lock, ShowHint, Setup, Open, ChangePw, Format, ResetUserPw, Quit, None
+    };
     struct Item {
         int id;
         Kind kind;
