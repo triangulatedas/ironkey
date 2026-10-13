@@ -230,9 +230,9 @@ run operations on the existing per-port worker model.
    dbusmenu over sd-bus and registers with the watcher; the menu lists each drive
    with an Unlock/Lock action plus Quit, Unlock going through
    `Agent::request_unlock`. Shares the agent's `poll()` loop; headless fallback if
-   no bus/watcher. Verified on GNOME via busctl (registration, properties, layout,
-   and a click dispatching an action). Visual confirmation on the live top-bar
-   pending.
+   no bus/watcher. Verified on GNOME (Wayland): the icon shows in the top bar and
+   the menu opens and acts; also checked via busctl (registration, properties,
+   layout, and a click dispatching an action).
 3. **Status & hint** — failed-count line and on-click hint, read over SCSI when
    available. *Done (non-UI part):* `read_device_summary()` in `device_ops`
    reads setup (admin-only / admin+user), the admin failed-login count, lock
