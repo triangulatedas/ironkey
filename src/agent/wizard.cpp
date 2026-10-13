@@ -7,6 +7,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cctype>
 #include <cerrno>
 #include <initializer_list>
 #include <optional>
@@ -17,6 +18,7 @@
 #include "agent/notify.h"
 #include "linux/device_ops.h"
 #include "linux/usb_topology.h"
+#include "linux/volumes.h"
 #include "proto/bytes.h"
 #include "proto/session.h"
 
@@ -31,12 +33,9 @@ namespace {
 // data is passed on the command line (typed values come back on stdout), so the
 // fixed-string args are safe. noinline: it forks a process (inlining is
 // pointless) and it sidesteps a GCC false-positive -Wfree-nonheap-object when
-// the std::vector<std::string> arg list is inlined into the caller.
+// the argument list is inlined into the caller.
 [[gnu::noinline]] std::optional<std::string> run_zenity(std::initializer_list<std::string_view> args)
 {
-    // Own null-terminated copies here (string_view is not terminated). Keeping
-    // this vector inside this noinline function means the caller builds only a
-    // trivially-destructible string_view array at the call site.
     std::vector<std::string> owned;
     owned.reserve(args.size());
     for (std::string_view a : args)
@@ -94,9 +93,65 @@ namespace {
     return out;
 }
 
-std::optional<std::string> ask_password(const std::string& title, const std::string& text)
+// A hidden-text (password) entry. nullopt = cancelled.
+std::optional<std::string> ask_secret(const std::string& title, const std::string& text)
 {
-    return run_zenity({"--entry", "--hide-text", "--width=440", "--title", title, "--text", text});
+    return run_zenity({"--entry", "--hide-text", "--width=460", "--title", title, "--text", text});
+}
+
+// A visible entry with an optional prefilled value. nullopt = cancelled.
+std::optional<std::string> ask_text(const std::string& title, const std::string& text,
+                                    const std::string& prefill = "")
+{
+    if (prefill.empty())
+        return run_zenity({"--entry", "--width=460", "--title", title, "--text", text});
+    return run_zenity(
+        {"--entry", "--width=460", "--title", title, "--text", text, "--entry-text", prefill});
+}
+
+void warn_box(const std::string& text)
+{
+    run_zenity({"--warning", "--icon=dialog-warning", "--width=420", "--text", text});
+}
+
+// A yes/no confirmation shown with a warning icon. true = the user confirmed.
+bool confirm_warn(const std::string& text, const std::string& ok, const std::string& cancel)
+{
+    return run_zenity({"--question", "--icon=dialog-warning", "--width=480", "--default-cancel",
+                       "--text", text, "--ok-label", ok, "--cancel-label", cancel})
+        .has_value();
+}
+
+const char* password_strength(const std::string& p)
+{
+    bool lo = false, up = false, di = false, ot = false;
+    for (unsigned char c : p) {
+        if (std::islower(c))
+            lo = true;
+        else if (std::isupper(c))
+            up = true;
+        else if (std::isdigit(c))
+            di = true;
+        else
+            ot = true;
+    }
+    int classes = lo + up + di + ot;
+    size_t n = p.size();
+    if (n >= 12 && classes >= 3)
+        return "Strong";
+    if (n >= 10 && classes >= 2)
+        return "Good";
+    if (n >= 8)
+        return "Fair";
+    return "Weak";
+}
+
+std::string short_desc(const UsbDevice& dev)
+{
+    std::string s = dev.product.empty() ? "IronKey" : dev.product;
+    if (!dev.port.empty())
+        s += " (port " + dev.port + ")";
+    return s;
 }
 
 bool find_drive(const std::string& port, UsbDevice& out)
@@ -109,15 +164,54 @@ bool find_drive(const std::string& port, UsbDevice& out)
     return false;
 }
 
-void wipe(std::optional<std::string>& s)
+// Collects a confirmed password plus an optional hint for one account. `who` is
+// "" (single), "admin " or "user ". Returns false if the user cancelled.
+bool collect_password(const std::string& who, std::string& out_pw, std::string& out_hint)
 {
-    if (s)
-        secure_wipe(s->data(), s->capacity());
+    for (;;) {
+        auto pw = ask_secret("Set the " + who + "password",
+                             "Choose a password of <b>at least 6 characters</b>.\n"
+                             "10 or more, mixing letters, digits and symbols, is strongly "
+                             "recommended.");
+        if (!pw)
+            return false;
+        if (pw->size() < 6) {
+            warn_box("The password must be at least 6 characters.");
+            secure_wipe(pw->data(), pw->capacity());
+            continue;
+        }
+        const char* strength = password_strength(*pw);
+        auto confirm = ask_secret("Confirm password", std::string("Strength: <b>") + strength +
+                                                           "</b>\nRe-enter the same password.");
+        if (!confirm) {
+            secure_wipe(pw->data(), pw->capacity());
+            return false;
+        }
+        bool match = (*pw == *confirm);
+        secure_wipe(confirm->data(), confirm->capacity());
+        if (!match) {
+            warn_box("The passwords did not match. Please try again.");
+            secure_wipe(pw->data(), pw->capacity());
+            continue;
+        }
+        if (pw->size() < 10 &&
+            !confirm_warn("This password is short (" + std::to_string(pw->size()) +
+                              " characters, strength <b>" + strength +
+                              "</b>).\nA longer passphrase is much harder to guess.\n\nUse it "
+                              "anyway?",
+                          "Use it anyway", "Change it")) {
+            secure_wipe(pw->data(), pw->capacity());
+            continue;
+        }
+        auto hint = ask_text("Password hint (optional)",
+                             "Shown on the drive <b>before unlocking</b>, on any computer.\n"
+                             "A reminder only — do not put the password itself here.");
+        out_pw = *pw;
+        secure_wipe(pw->data(), pw->capacity());
+        out_hint = hint ? *hint : std::string();
+        return true;
+    }
 }
-
-const char* const kHostWarning =
-    "Set a password only on a computer you trust: this drive's unlock uses weak "
-    "RSA that a program recording USB traffic could break.";
 
 }  // namespace
 
@@ -128,110 +222,127 @@ void run_setup_wizard(std::string port, bool dry_run)
         notify("IronKey", "The drive is no longer connected.", true);
         return;
     }
-    const std::string desc = describe(dev);
+    const std::string desc = short_desc(dev);
 
-    // 1. Confirm erase.
-    if (!run_zenity({"--question", "--title", "Reset IronKey", "--width=480", "--default-cancel",
-                     "--ok-label", "Erase and set up", "--cancel-label", "Cancel", "--text",
-                     "This ERASES ALL DATA on " + desc +
-                         " and sets a new password.\nThis cannot be undone, and no current "
-                         "password is needed.\n\nContinue?"}))
+    // 1. Confirm erase (warning icon, short formatted text).
+    if (!confirm_warn("<b>Erase “" + desc +
+                          "” and set it up?</b>\n\nThis permanently deletes everything on the "
+                          "drive. You will choose a new password next; no current password is "
+                          "needed.",
+                      "Erase and set up", "Cancel"))
         return;
 
-    // 2. One password or admin + user.
-    auto mode = run_zenity({"--list", "--radiolist", "--title", "Accounts", "--width=400",
-                            "--height=260", "--print-column", "2", "--text",
-                            "Set up how many passwords on this drive?", "--column", "", "--column",
-                            "Mode", "TRUE", "Single password", "FALSE", "Admin + user"});
+    // 2. Optional second (user) account — framed as a choice, not a count.
+    auto mode = run_zenity(
+        {"--list", "--radiolist", "--title", "User account", "--width=460", "--height=300",
+         "--print-column", "2", "--hide-column", "2", "--text",
+         "A separate <b>user</b> account is optional.\n\nIt has its own password. The <b>admin</b> "
+         "can reset the user's password if it is forgotten; the user cannot change the admin's. "
+         "Most people need just one password.",
+         "--column", "", "--column", "key", "--column", "Set up", "TRUE", "single",
+         "Just one password  (recommended)", "FALSE", "both",
+         "Admin  +  a separate user account"});
     if (!mode)
         return;
-    const bool with_user = (*mode == "Admin + user");
+    const bool with_user = (*mode == "both");
 
-    // 3. Password(s), each entered twice. Separate dialogs avoid any form-field
-    //    separator colliding with the password.
-    auto admin = ask_password(with_user ? "New admin password" : "New password", kHostWarning);
-    if (!admin)
-        return;
-    auto admin2 = ask_password("Confirm password", "Re-enter the same password.");
-    if (!admin2) {
-        wipe(admin);
-        return;
-    }
-    bool ok = (*admin == *admin2) && !admin->empty() && admin->size() <= kMaxPassphraseBytes;
-    wipe(admin2);
-    if (!ok) {
-        wipe(admin);
-        notify("IronKey", "Passwords did not match or were not 1–64 characters; nothing was "
-                          "changed.",
-               true);
-        return;
-    }
-
-    std::optional<std::string> user;
-    if (with_user) {
-        user = ask_password("New user password", kHostWarning);
-        if (!user) {
-            wipe(admin);
-            return;
-        }
-        auto user2 = ask_password("Confirm user password", "Re-enter the user password.");
-        bool uok = user2 && (*user == *user2) && !user->empty() && user->size() <= kMaxPassphraseBytes;
-        wipe(user2);
-        if (!uok) {
-            wipe(admin);
-            wipe(user);
-            notify("IronKey", "User passwords did not match or were not 1–64 characters; nothing "
-                              "was changed.",
-                   true);
-            return;
-        }
-    }
-
-    // 4. Owner info (optional). Cancel just skips it.
+    // 3. Password(s), each with an optional hint.
     Profile profile;
-    if (auto info = run_zenity({"--forms", "--title", "Owner info (optional)", "--width=440",
+    std::string admin, user;
+    if (!collect_password(with_user ? "admin " : "", admin, profile.admin_hint))
+        return;
+    if (with_user && !collect_password("user ", user, profile.user_hint)) {
+        secure_wipe(admin.data(), admin.capacity());
+        return;
+    }
+
+    // 4. Owner info (optional): name, company, description. Cancel = skip.
+    if (auto info = run_zenity({"--forms", "--title", "Owner info (optional)", "--width=480",
                                "--separator", std::string(1, '\x1f'), "--text",
                                "Stored on the drive and readable before unlock. Leave blank to "
                                "skip.",
-                               "--add-entry", "Name", "--add-entry", "Admin password hint"})) {
-        auto sep = info->find('\x1f');
-        if (sep != std::string::npos) {
-            profile.name = info->substr(0, sep);
-            profile.admin_hint = info->substr(sep + 1);
-        } else {
-            profile.name = *info;
+                               "--add-entry", "Name", "--add-entry", "Company", "--add-entry",
+                               "Description"})) {
+        std::vector<std::string> f;
+        size_t start = 0;
+        for (;;) {
+            size_t sep = info->find('\x1f', start);
+            f.push_back(info->substr(start, sep - start));
+            if (sep == std::string::npos)
+                break;
+            start = sep + 1;
         }
+        if (f.size() > 0)
+            profile.name = f[0];
+        if (f.size() > 1)
+            profile.company = f[1];
+        if (f.size() > 2)
+            profile.description = f[2];
     }
 
-    // 5. Run the reset. Re-find the drive first (nodes may have changed).
     if (dry_run) {
-        notify("IronKey dry run", "Setup collected for " + desc +
-                                      (with_user ? " (admin + user)." : " (single password).") +
-                                      " Nothing was sent to the drive.");
-        wipe(admin);
-        wipe(user);
+        notify("IronKey dry run",
+               "Setup collected for " + desc +
+                   (with_user ? " (admin + user)." : " (single password).") +
+                   " Nothing was sent to the drive.");
+        secure_wipe(admin.data(), admin.capacity());
+        secure_wipe(user.data(), user.capacity());
         return;
     }
+
+    // 5. Reset. Re-find the drive first (nodes may have changed).
     notify("IronKey", "Resetting " + desc + "… this takes a few seconds.");
     UsbDevice fresh;
     if (!find_drive(port, fresh)) {
-        wipe(admin);
-        wipe(user);
+        secure_wipe(admin.data(), admin.capacity());
+        secure_wipe(user.data(), user.capacity());
         notify("IronKey", "The drive is no longer connected; nothing was changed.", true);
         return;
     }
     try {
-        ResetOutcome o = reset_device_auto(fresh, *admin, user ? *user : std::string(), profile,
-                                           std::nullopt, [](const std::string&) {});
-        notify("IronKey set up",
-               o.replug_needed
-                   ? "Reset complete. Unplug and replug the drive, then unlock it to use it."
-                   : "Reset complete. Unlock the drive from the tray menu to use it.");
+        reset_device_auto(fresh, admin, user, profile, std::nullopt, [](const std::string&) {});
     } catch (const std::exception& e) {
+        secure_wipe(admin.data(), admin.capacity());
+        secure_wipe(user.data(), user.capacity());
         notify("IronKey reset failed", e.what(), true);
+        return;
     }
-    wipe(admin);
-    wipe(user);
+
+    // 6. Optional format. Needs the drive unlocked, so do it with the admin
+    //    password we just set.
+    auto fs = run_zenity(
+        {"--list", "--radiolist", "--title", "Format the data disk?", "--width=480", "--height=300",
+         "--print-column", "2", "--hide-column", "2", "--text",
+         "Optionally create a filesystem now. Pick where you will use the drive:", "--column", "",
+         "--column", "key", "--column", "Filesystem", "TRUE", "exfat",
+         "exFAT — Windows, macOS and Linux", "FALSE", "vfat",
+         "FAT32 — most compatible, but no files over 4 GB", "FALSE", "ext4",
+         "ext4 — Linux only, owned by you"});
+    if (fs) {
+        auto label = ask_text("Volume label", "A name for the formatted disk.", "IRONKEY");
+        std::string lbl = (label && !label->empty()) ? *label : "IRONKEY";
+        try {
+            notify("IronKey", "Unlocking to format… ");
+            UsbDevice fdev;
+            if (!find_drive(port, fdev))
+                throw IronKeyError("the drive is no longer connected");
+            ensure_hid_mode(fdev, [](const std::string&) {});
+            Login login = choose_login(read_drive_status(fdev), Account::Admin);
+            unlock_device(fdev, admin, login, [](const std::string&) {});
+            std::string node = format_data_disk(fdev, *fs, lbl);
+            notify("IronKey ready", "Set up complete. Formatted " + node + " as " + *fs + ".");
+        } catch (const std::exception& e) {
+            notify("IronKey",
+                   std::string("The drive was reset, but formatting failed: ") + e.what() +
+                       "\nYou can unlock and format it from the tray.",
+                   true);
+        }
+    } else {
+        notify("IronKey set up", "Reset complete. Unlock the drive from the tray menu to use it.");
+    }
+
+    secure_wipe(admin.data(), admin.capacity());
+    secure_wipe(user.data(), user.capacity());
 }
 
 }  // namespace ironkey
