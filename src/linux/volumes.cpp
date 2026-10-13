@@ -101,6 +101,32 @@ bool is_mounted(const std::string& node)
     return false;
 }
 
+// The mount point of `node` per /proc/self/mounts (octal-unescaped), or empty.
+std::string mount_point_of(const std::string& node)
+{
+    std::ifstream mounts("/proc/self/mounts");
+    std::string line;
+    while (std::getline(mounts, line)) {
+        std::istringstream fields(line);
+        std::string source, target;
+        fields >> source >> target;
+        if (source != node)
+            continue;
+        std::string out;
+        for (size_t i = 0; i < target.size(); ++i) {
+            if (target[i] == '\\' && i + 3 < target.size()) {
+                out += static_cast<char>((target[i + 1] - '0') * 64 + (target[i + 2] - '0') * 8 +
+                                         (target[i + 3] - '0'));
+                i += 3;
+            } else {
+                out += target[i];
+            }
+        }
+        return out;
+    }
+    return {};
+}
+
 }  // namespace
 
 std::vector<std::string> release_volumes(const UsbDevice& dev)
@@ -206,6 +232,29 @@ std::string format_data_disk(const UsbDevice& dev, const std::string& fstype,
     }
     cleanup();
     return disk->node;
+}
+
+bool write_file_to_data_disk(const std::string& node, const std::string& filename,
+                             const std::string& contents)
+{
+    bool we_mounted = false;
+    if (!is_mounted(node)) {
+        if (run({"udisksctl", "mount", "--no-user-interaction", "-b", node}) != 0)
+            return false;
+        we_mounted = true;
+    }
+    std::string mp = mount_point_of(node);
+    bool ok = false;
+    if (!mp.empty()) {
+        std::ofstream f(mp + "/" + filename, std::ios::binary | std::ios::trunc);
+        f.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+        f.flush();
+        ok = f.good();
+    }
+    ::sync();
+    if (we_mounted)
+        run({"udisksctl", "unmount", "--no-user-interaction", "-b", node});
+    return ok;
 }
 
 }  // namespace ironkey

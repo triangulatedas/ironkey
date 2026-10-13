@@ -26,4 +26,11 @@ void power_off_drive(const UsbDevice& dev);
 std::string format_data_disk(const UsbDevice& dev, const std::string& fstype,
                              const std::string& label);
 
+// Mounts the data disk at `node` (if not already), writes `filename` with
+// `contents`, syncs and unmounts. Best-effort — returns false on any failure.
+// Used to drop the "USBtoCloudInstallDeclined.txt" marker after formatting so the
+// Windows vendor client stops nagging about its cloud-backup upsell.
+bool write_file_to_data_disk(const std::string& node, const std::string& filename,
+                             const std::string& contents);
+
 }  // namespace ironkey

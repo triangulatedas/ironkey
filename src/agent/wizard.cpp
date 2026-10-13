@@ -405,6 +405,8 @@ void perform_setup(const std::string& port, const std::string& desc, SetupReques
         Login login = choose_login(read_drive_status(fdev), Account::Admin);
         unlock_device(fdev, req.admin_pw, login, [](const std::string&) {});
         std::string node = format_data_disk(fdev, req.format, req.label);
+        // Drop the marker so the Windows vendor client won't nag about cloud backup.
+        write_file_to_data_disk(node, "USBtoCloudInstallDeclined.txt", "");
         notify("IronKey ready", "Set up complete. Formatted " + node + " as " + req.format + ".");
     } catch (const std::exception& e) {
         notify("IronKey",
@@ -635,6 +637,7 @@ void run_format_op(std::string port)
         if (!find_drive(port, fresh) || !fresh.is_unlocked())
             throw IronKeyError("the drive is no longer unlocked");
         std::string node = format_data_disk(fresh, fstype, label);
+        write_file_to_data_disk(node, "USBtoCloudInstallDeclined.txt", "");
         notify("IronKey ready", "Formatted " + node + " as " + fstype + ".");
     } catch (const std::exception& e) {
         notify("IronKey", std::string("Format failed: ") + e.what(), true);

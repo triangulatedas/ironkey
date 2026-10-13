@@ -555,6 +555,8 @@ int cmd_format(const std::string& port, const std::string& fstype, const std::st
     std::printf("Formatting the data disk of %s as %s (label '%s'). This erases it.\n",
                 describe(dev).c_str(), fstype.c_str(), label.c_str());
     std::string node = format_data_disk(dev, fstype, label);
+    // Drop the marker so the Windows vendor client won't nag about cloud backup.
+    write_file_to_data_disk(node, "USBtoCloudInstallDeclined.txt", "");
     std::printf("Done. %s is now a %s filesystem; eject with `ironkey-unlock lock`.\n",
                 node.c_str(), fstype.c_str());
     return 0;
