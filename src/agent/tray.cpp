@@ -469,9 +469,13 @@ int Tray::menu_event(sd_bus_message* m, void* userdata, sd_bus_error*)
 
 int Tray::menu_about_to_show(sd_bus_message* m, void* userdata, sd_bus_error*)
 {
-    auto* self = static_cast<Tray*>(userdata);
-    self->rebuild_items();  // so the following GetLayout is fresh
-    return sd_bus_reply_method_return(m, "b", 1);  // needUpdate => re-fetch layout
+    (void)userdata;
+    // Return needUpdate = false: the current layout is still valid. Returning
+    // true makes the host re-fetch the whole layout every time a (sub)menu
+    // opens, which tears down the submenu mid-open — an open/close loop that
+    // makes items unclickable. Layout changes are pushed via LayoutUpdated from
+    // notify_changed() on hotplug instead.
+    return sd_bus_reply_method_return(m, "b", 0);
 }
 
 // --- vtables (out-of-line, so they may name the private trampolines) ---------
