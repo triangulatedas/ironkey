@@ -98,16 +98,18 @@ void set_password_device(UsbDevice& dev, std::string_view new_password, const Lo
 }
 
 void reset_device_full(UsbDevice& dev, std::string_view new_password, const Profile& profile,
-                       const Log& log, bool trace)
+                       const Log& log, bool trace, std::string_view user_password)
 {
     if (!dev.in_hid_mode())
         throw IronKeyError("Device is not in HID mode");
     HidrawDevice hid(dev.hidraw.front());
     TracingHidDevice traced(hid, log);
     Channel ch(trace ? static_cast<HidDevice&>(traced) : hid);
-    // Reset always sets the single/admin password (index 0).
-    reset_device(ch, new_password, Account::Admin);
-    log("Reset complete: area wiped and new password set.");
+    // Reset sets the admin password (index 0), and the user password (index 1)
+    // when one is given.
+    reset_device(ch, new_password, user_password);
+    log(user_password.empty() ? "Reset complete: area wiped and new password set."
+                              : "Reset complete: area wiped, admin and user passwords set.");
     if (!profile.empty()) {
         write_profile(ch, profile);
         log("Owner info written.");

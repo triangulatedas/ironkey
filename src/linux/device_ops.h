@@ -106,10 +106,11 @@ void set_password_device(UsbDevice& dev, std::string_view new_password, const Lo
                          const Log& log, bool trace = false);
 
 // Full factory reset: wipes the drive (crypto-erase, DESTROYS ALL DATA) and
-// sets a new single/admin password. The drive must be in HID mode; no old
-// password is needed. Create a filesystem afterwards with mkfs.
+// sets a new admin password. Pass a non-empty `user_password` to also provision
+// a user account. The drive must be in HID mode; no old password is needed.
+// Create a filesystem afterwards with mkfs.
 void reset_device_full(UsbDevice& dev, std::string_view new_password, const Profile& profile,
-                       const Log& log, bool trace = false);
+                       const Log& log, bool trace = false, std::string_view user_password = {});
 
 // Reads the owner profile (name/company/description/hints) without unlocking.
 // The drive must be in HID mode.

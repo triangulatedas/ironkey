@@ -181,6 +181,34 @@ TEST(password_block_matches_vendor_hashPassword)
              std::string("26003f01ddc64bc36b9526317bfc1971"));
 }
 
+TEST(configure_payload_layout_single_and_dual_account)
+{
+    // A fixed session key; the tokens are AES-ECB(key, password_block(pw)).
+    Key128 key{};
+    for (size_t i = 0; i < key.size(); ++i)
+        key[i] = static_cast<uint8_t>(i + 1);
+    const uint32_t sectors = 0x072f4000;  // as seen on the wire (LE 00 40 2f 07)
+    auto token = [&](std::string_view pw) {
+        Key128 t = aes128_ecb_encrypt(key, password_block(pw));
+        return hex(ByteView(t.data(), t.size()));
+    };
+
+    // Single account: size[4] + one 16-byte admin token.
+    Bytes one = configure_payload(key, sectors, "Abcd1234#$!!geir");
+    CHECK_EQ(one.size(), size_t(20));
+    CHECK_EQ(hex(ByteView(one.data(), 4)), std::string("00402f07"));
+    CHECK_EQ(hex(ByteView(one.data() + 4, 16)), token("Abcd1234#$!!geir"));
+
+    // Admin + user: size[4] + admin token + user token (admin first, index 0).
+    Bytes two = configure_payload(key, sectors, "Abcd1234#$!!geir", "userpass");
+    CHECK_EQ(two.size(), size_t(36));
+    CHECK_EQ(hex(ByteView(two.data(), 4)), std::string("00402f07"));
+    CHECK_EQ(hex(ByteView(two.data() + 4, 16)), token("Abcd1234#$!!geir"));
+    CHECK_EQ(hex(ByteView(two.data() + 20, 16)), token("userpass"));
+    // The admin half of the dual payload is identical to the single-account one.
+    CHECK_EQ(hex(ByteView(two.data() + 4, 16)), hex(ByteView(one.data() + 4, 16)));
+}
+
 TEST(password_too_long_is_rejected_before_sending)
 {
     ReplayDevice dev;

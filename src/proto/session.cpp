@@ -71,6 +71,21 @@ Bytes make_set_token(const Key128& shared, std::string_view password)
 
 }  // namespace
 
+Bytes configure_payload(const Key128& shared, uint32_t area_sectors,
+                        std::string_view admin_password, std::string_view user_password)
+{
+    Bytes payload = {static_cast<uint8_t>(area_sectors), static_cast<uint8_t>(area_sectors >> 8),
+                     static_cast<uint8_t>(area_sectors >> 16),
+                     static_cast<uint8_t>(area_sectors >> 24)};
+    Bytes admin = make_set_token(shared, admin_password);
+    payload.insert(payload.end(), admin.begin(), admin.end());
+    if (!user_password.empty()) {
+        Bytes user = make_set_token(shared, user_password);
+        payload.insert(payload.end(), user.begin(), user.end());
+    }
+    return payload;
+}
+
 Bytes clamp_to_modulus(ByteView buf, ByteView n_dev)
 {
     Bytes b(buf.begin(), buf.end());
@@ -281,10 +296,13 @@ void change_password(Channel& ch, std::string_view old_password, std::string_vie
     secure_wipe(shared.data(), shared.size());
 }
 
-void reset_device(Channel& ch, std::string_view new_password, Account account)
+void reset_device(Channel& ch, std::string_view admin_password, std::string_view user_password)
 {
-    if (new_password.empty() || new_password.size() > kMaxPassphraseBytes)
+    if (admin_password.empty() || admin_password.size() > kMaxPassphraseBytes)
         throw UnlockError("New password must be 1 to 64 characters");
+    if (user_password.size() > kMaxPassphraseBytes)
+        throw UnlockError("User password must be at most 64 characters");
+    const bool with_user = !user_password.empty();
     SystemRandom rng;
 
     uint32_t sectors = 0;
@@ -324,12 +342,12 @@ void reset_device(Channel& ch, std::string_view new_password, Account account)
     //    login/verify. (Confirmed by disassembling the macOS vendor app.)
     {
         Key128 k = open_session();
-        Bytes token = make_set_token(k, new_password);  // 16 (complex) or 32 (passphrase)
-        Bytes payload = {static_cast<uint8_t>(sectors), static_cast<uint8_t>(sectors >> 8),
-                         static_cast<uint8_t>(sectors >> 16), static_cast<uint8_t>(sectors >> 24)};
-        payload.insert(payload.end(), token.begin(), token.end());
+        // size[4] + admin token (+ user token). The device reads the account
+        // count from the length; the CDB is identical for one or two accounts
+        // (CDB[1] stays 0, confirmed against the vendor captures).
+        Bytes payload = configure_payload(k, sectors, admin_password, user_password);
         ch.command(0xA2, 0x00, Direction::Write, payload, static_cast<uint32_t>(payload.size()),
-                   {0x00, static_cast<uint8_t>(account), 0x00, 0x41, 0xA2, 0x00, 0x00, 0x00});
+                   {0x00, 0x00, 0x00, 0x41, 0xA2, 0x00, 0x00, 0x00});
         ch.command(0x89, 0x00, Direction::None);
 
         // 2b. Region prep (FF 07). Three fixed commands, sent in the same
@@ -348,20 +366,24 @@ void reset_device(Channel& ch, std::string_view new_password, Account account)
     //    region prep (the capture reads full READ CAPACITY right after it).
     mode_flag();
 
-    // 4. Verify by logging in with the new password (FF A4 = NTU_Open). The
+    // 4. Verify by logging in with the new password(s) (FF A4 = NTU_Open). The
     //    vendor app does this post-set login; a wrong-password report here
-    //    (status byte 6 set) would mean the FF A2 token did not take.
-    {
+    //    (status byte 6 set) would mean the FF A2 token did not take. Each
+    //    account is verified in its own session with its own userIDIndex.
+    auto verify = [&](std::string_view password, Account acct) {
         Key128 k = open_session();
-        Key128 enc_pw = encrypt_login(k, new_password);
+        Key128 enc_pw = encrypt_login(k, password);
         ch.command(0xA4, 0x00, Direction::Write, enc_pw, 16,
-                   {0x00, static_cast<uint8_t>(account), 0x00, 0x06});
+                   {0x00, static_cast<uint8_t>(acct), 0x00, 0x06});
         bool rejected = ch.last_status.size() > 6 && ch.last_status[6] != 0;
         ch.command(0x89, 0x00, Direction::None);
         secure_wipe(k.data(), k.size());
-        if (rejected)
-            throw UnlockError("Reset completed the re-key but the new password did not verify");
-    }
+        return !rejected;
+    };
+    if (!verify(admin_password, Account::Admin))
+        throw UnlockError("Reset completed the re-key but the admin password did not verify");
+    if (with_user && !verify(user_password, Account::User))
+        throw UnlockError("Reset set the admin password, but the user password did not verify");
 
     // After this the data area is blank (crypto-erased); create a filesystem on
     // the now-present data partition with mkfs.

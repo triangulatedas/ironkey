@@ -150,12 +150,24 @@ void write_profile(Channel& ch, const Profile& profile);
 void write_protected_pages(Channel& ch,
                            const std::vector<std::pair<uint8_t, Bytes>>& pages);
 
+// FF A2 Configure payload: area size (4B LE) followed by one 16-byte token per
+// account — admin first (userIDIndex 0), then the user token when `user_password`
+// is non-empty. Each token = password_block() AES-ECB encrypted under the session
+// key (the same block FF A4 verifies), so provisioning and login always agree.
+// The device infers the account count from the payload length ((len-4)/16):
+// 20 bytes = admin only, 36 bytes = admin and user. Exposed for testing.
+Bytes configure_payload(const Key128& shared, uint32_t area_sectors,
+                        std::string_view admin_password, std::string_view user_password = {});
+
 // Full factory reset / initialize (the vendor "Reset Device" flow): mode flag,
 // then a single committed FF A2 Configure that both re-keys the area
-// (crypto-erase, DESTROYS ALL DATA) and sets `new_password` (the token is the
+// (crypto-erase, DESTROYS ALL DATA) and sets the password(s) (each token is a
 // password encrypted under the session key, CDB[6]=0x41 to re-key), finally a
-// login to verify. The drive must be in HID mode; no old password is needed.
-// Afterwards create a filesystem on the (blank) data partition with mkfs.
-void reset_device(Channel& ch, std::string_view new_password, Account account = Account::Admin);
+// login to verify. Pass a non-empty `user_password` to provision a user account
+// alongside the admin (36-byte FF A2); both accounts are verified. The drive
+// must be in HID mode; no old password is needed. Afterwards create a filesystem
+// on the (blank) data partition with mkfs.
+void reset_device(Channel& ch, std::string_view admin_password,
+                  std::string_view user_password = {});
 
 }  // namespace ironkey

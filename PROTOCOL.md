@@ -267,6 +267,25 @@ Hardware-verified examples:
 - `"Dette er en innmari lang text"` (29 chars) →
   `md5` = `26003f01ddc64bc36b9526317bfc1971`
 
+### Provisioning one or two accounts (`FF A2` payload length)
+
+The `FF A2` ConfigPrivateArea payload is `area_size[4 LE]` followed by **one
+16-byte token per account**, each `AES-128-ECB(session_key, password_block)`.
+The device infers the account count from the payload length, `(len - 4) / 16`:
+
+| Payload | Accounts | Layout |
+|---|---|---|
+| 20 bytes | admin only | `size[4]` + admin token |
+| 36 bytes | admin + user | `size[4]` + admin token + user token |
+
+The admin token comes first (userIDIndex 0), the user token second (index 1),
+matching `FF A4`'s account selector. **The CDB is identical in both cases**
+(`FF A2 00 00 00 00 41 A2 …`, CDB[1] = 0); only the length changes. Confirmed
+against the vendor captures (`ironkey-fileds`, `ironkey-passphrase` show the
+36-byte form) and hardware-verified: after `reset --admin-user`, the drive
+reports `account_flags = 0x07` (admin+user) and both accounts unlock
+independently.
+
 The vendor app also has a separate `MyAes`/`CRijndael` transform with a fixed
 `"PDMG…"` key (`encryptPasssword`); that is for *local* password handling, **not**
 the device token — a red herring during reverse-engineering.

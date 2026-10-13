@@ -163,6 +163,7 @@ the agent's hotplug handling in `--dry-run` mode.
 | Failed-login counter shown before/after unlock (admin account) | done |
 | Change password in place (`FF A6` / `FF A8`) | done, hardware-verified |
 | Reset / forgot-password (crypto-erase + set new password) | done, hardware-verified |
+| Provision admin + user accounts (`reset --admin-user`) | done, hardware-verified |
 | Passphrase mode (up to 64 characters) | done, hardware-verified |
 | Owner info — read & write name / company / hints (`info`, `reset --…`) | done, hardware-verified |
 | Create a filesystem on the data disk (`format`, vfat/exfat/ext4) | done, hardware-verified |
@@ -189,9 +190,16 @@ engineered from `IronKey.app` and hardware-verified): **≤ 16 chars** are the r
 UTF-8 bytes zero-padded to 16; **17–64 chars** are folded to 16 bytes with
 `MD5(utf8(password))`, so the *whole* passphrase counts. The set token and the
 login block use the same derivation, so provisioning and login agree and both
-interoperate with the vendor software. (The set token must stay 16 bytes for one
-account — the device reads a 32-byte token as *two* accounts, inferring the
-count from the payload length.)
+interoperate with the vendor software.
+
+**Admin + user accounts** (`ironkey-unlock reset --admin-user`) provisions two
+separate passwords on the drive. The device infers the account count from the
+`FF A2` payload length: `size[4]` + one 16-byte token is a single (admin)
+account; `size[4]` + two tokens (admin first, then user) provisions both. The
+CDB is identical either way. Verified on hardware — after provisioning, the
+drive reports both accounts and each password unlocks the data disk
+independently (the user account can be reset by the admin, and ten failed admin
+logins still crypto-erase the whole drive).
 
 **Owner info** — the drive stores a contact profile (name, company,
 description, and the admin/user password *hints*) in its protected hidden area,

@@ -129,20 +129,22 @@ run operations on the existing per-port worker model.
 
 ## Gaps / risks
 
-- **Admin+user provisioning — mechanism known, needs a hardware check.** The
+- **Admin+user provisioning — DONE (implemented and hardware-verified).** The
   device infers the account count from the `FF A2` payload length:
   `(len-4)/16`. A single account is a 20-byte payload (`size[4]` + one 16-byte
   token); **admin+user is a 36-byte payload = `size[4]` + two 16-byte tokens**,
-  each `enc(password_block)` (ECB, per account). `reset` currently sets only the
-  admin token. To provision both, send two tokens and the user index. The
-  earlier caveat — that the two 16-byte halves in the passphrase captures differ
-  even though both passphrases share their first 16 chars — is now **resolved**:
-  the per-account block is `password_block()`, and for a ≥17-char passphrase that
-  is `MD5(whole passphrase)`, so two different passphrases naturally give
-  different tokens even when their first 16 chars match (see PROTOCOL.md). No
-  hidden per-account element. Remaining work: implement the two-token A2 and
-  verify on hardware that **both** accounts unlock. Admin/user *login* already
-  works; only *creation* is pending.
+  each `enc(password_block)` (ECB, per account), admin first (index 0) then user
+  (index 1); the CDB is identical. Implemented as `configure_payload()` +
+  `reset_device(ch, admin, user)` in session.cpp, exposed on the CLI as
+  `reset --admin-user`. Verified on hardware: after provisioning, the drive
+  reports `account_flags = 0x07` (admin+user) and both accounts unlock
+  independently (see PROTOCOL.md). The earlier caveat — that the two 16-byte
+  halves in the passphrase captures differ even though both passphrases share
+  their first 16 chars — was explained by `password_block()`: for a ≥17-char
+  passphrase it is `MD5(whole passphrase)`, so two different passphrases give
+  different tokens even when their first 16 chars match. No hidden per-account
+  element. The UI wizard just needs to collect the two passwords and call
+  `reset_device_full(..., user_password)`.
 - **Factory/blank detection.** Need to confirm how a never-initialized drive
   reports (GetAreaParams / GetConfig) so the wizard can auto-offer setup.
 - **SNI host availability.** Bare GNOME needs the AppIndicator extension; the
@@ -160,5 +162,6 @@ run operations on the existing per-port worker model.
 3. **Status & hint** — failed-count line and on-click hint, read over SCSI when
    available.
 4. **Wizard** — single-password setup + owner info + optional format.
-5. **Admin/user** — login account choice now; user-account *provisioning* after
-   the capture + RE.
+5. **Admin/user** — login account choice now; user-account *provisioning* done
+   (`reset --admin-user` / `reset_device(ch, admin, user)`), so the wizard just
+   needs the two-password form.

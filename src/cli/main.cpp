@@ -672,7 +672,7 @@ int cmd_scsi_reenum(const std::string& port)
 // Factory reset / forgot-password recovery: wipes the drive (crypto-erase) and
 // sets a brand-new password. No old password needed.
 int cmd_reset(const std::string& port, bool password_stdin, std::optional<bool> prefer_scsi,
-              const Profile& profile)
+              const Profile& profile, bool with_user)
 {
     UsbDevice dev;
     if (!select_device(port, dev))
@@ -705,11 +705,17 @@ int cmd_reset(const std::string& port, bool password_stdin, std::optional<bool> 
                  "This cannot be undone. No current password is needed.\n\n%s\n\n",
                  describe(dev).c_str(), kUntrustedHostWarning);
 
-    Password new_pw;
+    Password new_pw, user_pw;
     if (password_stdin) {
-        // Scriptable: read the new password (1-64 chars) from stdin, no prompts.
+        // Scriptable: admin password on the first stdin line; with --admin-user,
+        // the user password on the second line. No prompts.
         if (!read_password_stdin(new_pw)) {
             std::fprintf(stderr, "No password on stdin; nothing was changed.\n");
+            return 1;
+        }
+        if (with_user && !read_password_stdin(user_pw)) {
+            std::fprintf(stderr, "--admin-user needs a user password on the second stdin line; "
+                                 "nothing was changed.\n");
             return 1;
         }
     } else {
@@ -719,15 +725,28 @@ int cmd_reset(const std::string& port, bool password_stdin, std::optional<bool> 
             std::fprintf(stderr, "Cancelled; nothing was changed.\n");
             return 1;
         }
-        read_password_tty("New password: ", new_pw);
+        read_password_tty(with_user ? "New admin password: " : "New password: ", new_pw);
         read_password_tty("Confirm new password: ", confirm);
         if (new_pw.value != confirm.value) {
             std::fprintf(stderr, "Passwords do not match; nothing was changed.\n");
             return 1;
         }
+        if (with_user) {
+            Password user_confirm;
+            read_password_tty("New user password: ", user_pw);
+            read_password_tty("Confirm user password: ", user_confirm);
+            if (user_pw.value != user_confirm.value) {
+                std::fprintf(stderr, "User passwords do not match; nothing was changed.\n");
+                return 1;
+            }
+        }
     }
     if (new_pw.value.empty() || new_pw.value.size() > kMaxPassphraseBytes) {
         std::fprintf(stderr, "New password must be 1 to 64 characters; nothing was changed.\n");
+        return 1;
+    }
+    if (with_user && (user_pw.value.empty() || user_pw.value.size() > kMaxPassphraseBytes)) {
+        std::fprintf(stderr, "User password must be 1 to 64 characters; nothing was changed.\n");
         return 1;
     }
 
@@ -735,8 +754,9 @@ int cmd_reset(const std::string& port, bool password_stdin, std::optional<bool> 
         {
             ScsiTransport st(find_scsi_helper(), dev.disks.front().node);
             Channel ch(st);
-            reset_device(ch, new_pw.value, Account::Admin);
-            print_log("Reset complete: area wiped and new password set.");
+            reset_device(ch, new_pw.value, with_user ? user_pw.value : std::string());
+            print_log(with_user ? "Reset complete: area wiped, admin and user passwords set."
+                                : "Reset complete: area wiped and new password set.");
             if (!profile.empty()) {
                 write_profile(ch, profile);
                 print_log("Owner info written.");
@@ -772,7 +792,8 @@ int cmd_reset(const std::string& port, bool password_stdin, std::optional<bool> 
         return 0;
     }
 
-    reset_device_full(dev, new_pw.value, profile, print_log, /*trace=*/false);
+    reset_device_full(dev, new_pw.value, profile, print_log, /*trace=*/false,
+                      with_user ? user_pw.value : std::string());
     std::printf(
         "\nReset complete: the drive was wiped and the new password set.\n"
         "\nNext steps:\n"
@@ -800,12 +821,14 @@ void usage()
         "                             Change a password in place (prompts for current and\n"
         "                             new). Does not unlock the drive.\n"
         "  reset [--name N] [--company C] [--description D]\n"
-        "        [--admin-hint H] [--user-hint H] [--scsi|--hid]\n"
+        "        [--admin-hint H] [--user-hint H] [--admin-user] [--scsi|--hid]\n"
         "                             Forgot-password recovery: ERASE the drive and set a\n"
         "                             new password (no old password needed). Optional owner\n"
-        "                             info is stored on the drive. Uses the replug-free SCSI\n"
-        "                             path automatically when the helper is installed, else\n"
-        "                             HID (replug after). --scsi/--hid force the choice.\n"
+        "                             info is stored on the drive. --admin-user provisions a\n"
+        "                             separate user account too (admin password first, then\n"
+        "                             user; with --password-stdin, one per line). Uses the\n"
+        "                             replug-free SCSI path automatically when the helper is\n"
+        "                             installed, else HID (replug after). --scsi/--hid force it.\n"
         "  info                       Show owner info (name/company/hint) without unlocking\n"
         "  format [--fs vfat|exfat|ext4] [--label NAME]\n"
         "                             Create a filesystem on an unlocked drive's data disk\n"
@@ -835,6 +858,7 @@ int main(int argc, char** argv)
     std::string fstype = "vfat"; // for `format`
     std::string label = "IRONKEY";
     std::optional<bool> prefer_scsi; // for `reset`: nullopt=auto
+    bool with_user = false;          // for `reset`: also provision a user account
     for (int i = 2; i < argc; ++i) {
         std::string_view arg = argv[i];
         if (arg == "--device" && i + 1 < argc) {
@@ -847,6 +871,8 @@ int main(int argc, char** argv)
             prefer_scsi = true;
         } else if (cmd == "reset" && arg == "--hid") {
             prefer_scsi = false;
+        } else if (cmd == "reset" && arg == "--admin-user") {
+            with_user = true;
         } else if (arg == "--password-stdin" && (cmd == "unlock" || cmd == "reset")) {
             password_stdin = true;
         } else if (cmd == "reset" && i + 1 < argc &&
@@ -894,7 +920,7 @@ int main(int argc, char** argv)
         if (cmd == "reset-probe")
             return cmd_reset_probe(port);
         if (cmd == "reset")
-            return cmd_reset(port, password_stdin, prefer_scsi, profile);
+            return cmd_reset(port, password_stdin, prefer_scsi, profile, with_user);
         if (cmd == "reset-selftest")
             return cmd_reset_selftest(port);
         if (cmd == "info")
