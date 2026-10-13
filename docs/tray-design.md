@@ -129,12 +129,20 @@ run operations on the existing per-port worker model.
 
 ## Gaps / risks
 
-- **Admin+user provisioning is not implemented.** `reset` only sets the admin
-  (index 0) password. Creating a *user* account (index 1) during setup needs
-  the user-account provisioning command (likely `FF A2` with `userIDcount=2`,
-  or a dedicated set-user-password flow) — not yet reverse-engineered. The
-  wizard can ship **single-password first**; admin+user needs one more capture
-  of the vendor "set up admin + user" flow.
+- **Admin+user provisioning — mechanism known, needs a hardware check.** The
+  device infers the account count from the `FF A2` payload length:
+  `(len-4)/16`. A single account is a 20-byte payload (`size[4]` + one 16-byte
+  token); **admin+user is a 36-byte payload = `size[4]` + two 16-byte tokens**,
+  each `enc(password[0:16])` (ECB, per account). `reset` currently sets only the
+  admin token. To provision both, send two tokens and the user index. One
+  caveat: in the passphrase/fields captures the two 16-byte halves differ even
+  though both passphrases share their first 16 chars, so either those captures
+  are single-passphrase resets on a drive that was *already* admin+user, or
+  there is a per-account element not visible without decrypting the tokens.
+  Resolve by implementing the straightforward two-token A2 and verifying on
+  hardware that **both** accounts unlock (I have the drive); a factory
+  admin+user setup capture would remove all doubt. Admin/user *login* already
+  works; only *creation* is pending.
 - **Factory/blank detection.** Need to confirm how a never-initialized drive
   reports (GetAreaParams / GetConfig) so the wizard can auto-offer setup.
 - **SNI host availability.** Bare GNOME needs the AppIndicator extension; the
