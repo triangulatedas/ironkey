@@ -61,8 +61,10 @@ Top level: an IronKey icon; tooltip shows how many drives and their state.
 Per connected drive a submenu titled from `describe(dev)`:
 
 - **Locked drive**
-  - `Unlock…` → password dialog (with admin/user choice when the drive has
-    both accounts). Shows the failed-login warning inline.
+  - `Unlock…` → the login dialog (see "Login / unlock dialog UX" below). On a
+    single-password drive it just says *Login*; on an admin+user drive it
+    defaults to the user account with an admin toggle. Shows the failed-login
+    warning inline.
   - `Show password hint` → reads the profile and shows the hint (on click only).
   - `Owner info…` → name / company / description (read-only).
   - `Reset / Set up…` → the wizard.
@@ -76,6 +78,60 @@ Per connected drive a submenu titled from `describe(dev)`:
 
 Items are enabled/disabled by state; the menu is cheap to rebuild from the
 device list the agent already tracks.
+
+## Login / unlock dialog UX
+
+This is the dialog the agent pops on insert and the tray's `Unlock…` opens. The
+backend already decides the account and the wording — `choose_login()` defaults
+to the **user** account on an admin+user drive and the sole account otherwise,
+and `Login::password_name()` returns plain **"password"** for a single-password
+drive but **"admin password" / "user password"** when both exist — so the UI
+only renders that state.
+
+**Account selection (rendered from `DeviceSummary.setup`, read non-disruptively
+before the dialog):**
+
+- **Single-password drive** → no account concept. Title *"Unlock IronKey"*, one
+  field prompting for *"the password"*, and **no toggle** — never show the words
+  "user" or "admin".
+- **Admin + user drive** → **default to the user account** (matching the vendor
+  and `choose_login`). Offer a switch to the admin account:
+  - *zenity:* `--forms --add-combo="Log in as" --combo-values="User|Admin"
+    --add-password="Password"` (one dialog, user preselected). The weak-RSA host
+    warning goes in `--text`.
+  - *kdialog / no combo support:* keep the plain password field and put the
+    account choice on the tray submenu instead — `Unlock (user)…` as the default
+    action plus `Unlock as admin…`. The agent's auto-popup, which has no menu,
+    uses a tiny first step: a `--radiolist`/`--menu` with User preselected, then
+    the password entry (skipped entirely on single-password drives, so the common
+    case stays one dialog).
+  - Reflect the choice in the prompt wording via `password_name()`, and show the
+    account-specific lockout note from `Login::lockout_consequence()` (user login
+    locks vs admin failures erase the drive).
+
+**Manage / set-up affordance (the "cog"):** the login dialog offers a way out to
+device management without unlocking — for a drive you want to initialize, format
+or inspect rather than log into.
+
+- *zenity:* `--extra-button="⚙ Set up / Manage…"`. Clicking it returns a distinct
+  exit code; the agent then opens the management surface (the tray submenu for
+  that drive, or directly the wizard / format / owner-info flows).
+- *tray:* the cog is unnecessary as a dialog button — the drive's submenu already
+  carries `Reset / Set up…`, `Owner info…`, `Show password hint`. The dialog's
+  cog is mainly for the **agent's auto-popup**, which appears without the tray
+  menu in reach.
+- The cog never bypasses the erase confirmation: it leads to the wizard, which
+  still requires the explicit ERASE step (see the wizard section).
+
+**Failed-login feedback:** when `DeviceSummary.admin_failed_attempts > 0`, show
+`Login::failed_warning()` inline (e.g. "2 failed logins; 8 left before the drive
+erases itself"). This is per the admin counter; the user counter is not exposed.
+
+Requirement recap: *user-default with an admin toggle on two-account drives, a
+plain "Login" with no account wording on one-account drives, and a cog in the
+popup to reach set-up/format* — all driven by `DeviceSummary.setup` +
+`choose_login()` + `password_name()`, which already exist; only the dialog
+rendering is new.
 
 ## Reading status & hints without disruption
 
@@ -116,7 +172,8 @@ Steps:
 |---|---|
 | Menu of commands | SNI + DBusMenu in the agent; actions call `device_ops`. |
 | Setup/initialize wizard | Sequenced zenity dialogs → `reset_device_auto` + `format_data_disk`. |
-| Admin or user login | Account radio in the unlock dialog; `choose_login` already supports it. |
+| Admin or user login | Login dialog defaults to the user account with an admin toggle on admin+user drives, and shows a plain "Login" (no account wording) on single-password drives — see "Login / unlock dialog UX". Driven by `choose_login()` + `password_name()`, which already exist. |
+| Set-up/format from the login popup | A "⚙ Set up / Manage…" affordance (zenity `--extra-button`, or the drive's tray submenu) that opens the wizard / format / owner-info without unlocking; never bypasses the erase confirmation. |
 | Show failed tries | `read_drive_status().admin_failed_attempts` (read over SCSI when possible) shown as a disabled menu line + tooltip. |
 | Hint on click only | `Show password hint` action → `read_profile` → dialog. Never shown by default. |
 
