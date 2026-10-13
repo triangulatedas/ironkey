@@ -296,6 +296,36 @@ void change_password(Channel& ch, std::string_view old_password, std::string_vie
     secure_wipe(shared.data(), shared.size());
 }
 
+void reset_user_password(Channel& ch, std::string_view admin_password,
+                         std::string_view new_user_password)
+{
+    if (admin_password.empty() || admin_password.size() > kMaxPassphraseBytes)
+        throw UnlockError("Admin password must be 1 to 64 characters");
+    if (new_user_password.empty() || new_user_password.size() > kMaxPassphraseBytes)
+        throw UnlockError("New user password must be 1 to 64 characters");
+    SystemRandom rng;
+
+    // Mirrors the vendor "reset user password" flow (captured): two PVC0
+    // sessions, no FF A4 login. Both reuse send_change_password's framing.
+    // 1. Prove the admin password: FF A6 with admin -> admin (a no-op change).
+    {
+        RsaKey host = RsaKey::generate512();
+        Key128 shared = rsa_handshake(ch, rng, host);
+        send_change_password(ch, shared, admin_password, admin_password, rng, Account::Admin);
+        secure_wipe(shared.data(), shared.size());
+    }
+    // 2. Reassign the user password: FF A8 with enc(admin) || enc(new_user). The
+    //    device accepts the admin password in the "old" slot of the user-change
+    //    command as the authorisation (NTU_PVC_ReAssign_The2ndPassword). Throws
+    //    WrongPasswordError if the admin password is wrong.
+    {
+        RsaKey host = RsaKey::generate512();
+        Key128 shared = rsa_handshake(ch, rng, host);
+        send_change_password(ch, shared, admin_password, new_user_password, rng, Account::User);
+        secure_wipe(shared.data(), shared.size());
+    }
+}
+
 void reset_device(Channel& ch, std::string_view admin_password, std::string_view user_password)
 {
     if (admin_password.empty() || admin_password.size() > kMaxPassphraseBytes)

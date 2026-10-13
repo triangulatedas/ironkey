@@ -390,7 +390,47 @@ int cmd_change_password(const std::string& port, std::optional<Account> requeste
     return 0;
 }
 
+// Admin resets the user password (no old user password needed, no data loss).
+int cmd_reset_user_password(const std::string& port)
+{
+    UsbDevice dev;
+    if (!select_device(port, dev))
+        return 1;
+    check_access(dev);
+    ensure_hid_mode(dev, print_log);
+    DriveStatus status = read_drive_status(dev);
+    if (status.setup != PasswordSetup::AdminAndUser) {
+        std::fprintf(stderr, "This drive has no separate user account to reset "
+                             "(set one up with `reset --admin-user`).\n");
+        return 1;
+    }
 
+    std::fprintf(stderr, "%s\n\n", kUntrustedHostWarning);
+    Password admin_pw, new_pw, confirm;
+    if (!read_password_tty("Admin password: ", admin_pw) || admin_pw.value.empty()) {
+        std::fprintf(stderr, "No password given.\n");
+        return 1;
+    }
+    read_password_tty("New user password: ", new_pw);
+    read_password_tty("Confirm new user password: ", confirm);
+    if (new_pw.value != confirm.value) {
+        std::fprintf(stderr, "New passwords do not match; nothing was changed.\n");
+        return 1;
+    }
+    if (new_pw.value.empty() || new_pw.value.size() > kMaxPassphraseBytes) {
+        std::fprintf(stderr, "New user password must be 1 to 64 characters; nothing was changed.\n");
+        return 1;
+    }
+
+    try {
+        reset_user_password_device(dev, admin_pw.value, new_pw.value, print_log);
+    } catch (const WrongPasswordError&) {
+        std::fprintf(stderr, "The admin password is wrong; nothing was changed.\n");
+        return 3;
+    }
+    std::printf("Reset the user password on %s.\n", describe(dev).c_str());
+    return 0;
+}
 
 // Diagnostic: probe the FF A2 area re-key token format WITHOUT committing, to
 // test the reset hypothesis safely. Sends no FF 89, so nothing should persist.
@@ -772,6 +812,8 @@ void usage()
         "  change-password [--admin|--user]\n"
         "                             Change a password in place (prompts for current and\n"
         "                             new). Does not unlock the drive.\n"
+        "  reset-user-password        Admin resets the user password (prompts for the admin\n"
+        "                             password and a new user password). No data loss.\n"
         "  reset [--name N] [--company C] [--description D]\n"
         "        [--admin-hint H] [--user-hint H] [--admin-user] [--scsi|--hid]\n"
         "                             Forgot-password recovery: ERASE the drive and set a\n"
@@ -871,6 +913,8 @@ int main(int argc, char** argv)
             return cmd_dump(port, with_session);
         if (cmd == "change-password")
             return cmd_change_password(port, account, trace);
+        if (cmd == "reset-user-password")
+            return cmd_reset_user_password(port);
         if (cmd == "reset-probe")
             return cmd_reset_probe(port);
         if (cmd == "reset")

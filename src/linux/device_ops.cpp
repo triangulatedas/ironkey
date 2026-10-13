@@ -329,6 +329,18 @@ void change_password_device(UsbDevice& dev, std::string_view old_password,
     log("Password changed.");
 }
 
+void reset_user_password_device(UsbDevice& dev, std::string_view admin_password,
+                                std::string_view new_user_password, const Log& log, bool trace)
+{
+    if (!dev.in_hid_mode())
+        throw IronKeyError("Device is not in HID mode");
+    HidrawDevice hid(dev.hidraw.front());
+    TracingHidDevice traced(hid, log);
+    Channel ch(trace ? static_cast<HidDevice&>(traced) : hid);
+    reset_user_password(ch, admin_password, new_user_password);
+    log("User password reset by admin.");
+}
+
 DriveStatus read_drive_status(const UsbDevice& dev)
 {
     DriveStatus status;

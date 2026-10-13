@@ -506,15 +506,38 @@ data* — distinct from `changePassword` (needs the old password) and from `rese
 - Both passwords are validated as ≤ 16-byte blocks (so a passphrase is MD5-folded
   first, like everywhere else — see `password_block`).
 
-So the shape mirrors change-password (two 16-byte blocks) but the **first block
-authorises as admin** and the target is the user account. The exact `FF`
-subfunction byte for this command is **not yet pinned from static analysis** (it
-is behind the SDK's ObjC dispatch) — capture the vendor "reset user password"
-flow to confirm the `FF` code and CDB, then it is straightforward to implement
-alongside `send_change_password`. Related newly-named commands seen in the
-binary: `NTU_OneTimeRecoveryPassword:buffer:size:userIDcount:action:` (the
-recovery-password feature) and `NTU_PVC_Configure_Private_Area_Key:…:userIDcount`
-(our `FF A2` reset/provision).
+**Confirmed on the wire** (`ironkey-chg-user-pwd.pcapng`, admin resets the user
+password). It is two PVC0 sessions, **no `FF A4` login**, reusing the
+change-password opcodes:
+
+1. **`FF A6`** (admin change) with payload `enc(admin) ‖ enc(admin)` — two
+   *identical* blocks, i.e. "change the admin password to itself": an admin
+   **self-verify**.
+2. **`FF A8`** (user change) with payload `enc(admin) ‖ enc(new_user)`. The device
+   accepts the **admin** password in the "old" slot of the user-change command as
+   the authorisation and sets the new user password. This is the
+   `NTU_PVC_ReAssign_The2ndPassword` operation.
+
+Each session is the usual `handshake → FF 8B(00 03) → FF 8F(02, PVC key) →
+FF A6/A8 → FF 89`. The app also rewrites the hint pages (`FF 62 0d/0e`).
+
+Implemented as `reset_user_password()` in session.cpp (two
+`send_change_password` calls: `(admin, admin, Admin)` then
+`(admin, new_user, User)`) and `reset_user_password_device()` / the CLI
+`reset-user-password`. A wrong admin password is rejected (WrongPasswordError),
+no data loss.
+
+Related newly-named commands seen in the binary:
+`NTU_OneTimeRecoveryPassword:buffer:size:userIDcount:action:` (a recovery-password
+feature — see note) and `NTU_PVC_Configure_Private_Area_Key:…:userIDcount` (our
+`FF A2` reset/provision).
+
+> **One-time recovery password** — `NTU_OneTimeRecoveryPassword` /
+> `DriveSDK::createRecoveryPassword` exist in the SDK but the Kingston client for
+> this model does not expose them; they appear aimed at the IronKey "Privacy"
+> (vault) line. The command vocabulary is present in the same firmware interface,
+> so it *may* work on this device — untested, undocumented, and would need its own
+> capture/RE. Noted as a possible future probe.
 
 ### Accounts
 

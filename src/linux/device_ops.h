@@ -199,6 +199,12 @@ void change_password_device(UsbDevice& dev, std::string_view old_password,
                             std::string_view new_password, const Login& login, const Log& log,
                             bool trace = false);
 
+// Admin resets the user password (no old user password, no data loss). The drive
+// must be in HID mode. Throws WrongPasswordError if the admin password is wrong.
+void reset_user_password_device(UsbDevice& dev, std::string_view admin_password,
+                                std::string_view new_user_password, const Log& log,
+                                bool trace = false);
+
 // Locks an unlocked drive by unmounting it and powering it off, then waits
 // for it to leave the bus. Returns false if it was not unlocked.
 bool lock_device(UsbDevice& dev, const Log& log);

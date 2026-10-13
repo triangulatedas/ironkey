@@ -111,6 +111,14 @@ void unlock(Channel& ch, std::string_view password, Account account = Account::A
 void change_password(Channel& ch, std::string_view old_password, std::string_view new_password,
                      Account account = Account::Admin);
 
+// Admin resets the USER password without the old user password and without
+// erasing data (the vendor "reset user password" flow). Needs only the admin
+// password. Two PVC0 sessions: FF A6 admin->admin (prove admin), then FF A8 with
+// enc(admin)||enc(new_user) (NTU_PVC_ReAssign_The2ndPassword). The drive must be
+// in HID mode. Throws WrongPasswordError if the admin password is wrong.
+void reset_user_password(Channel& ch, std::string_view admin_password,
+                         std::string_view new_user_password);
+
 // Set a password with no prior password (FF A5, then 8B/8F/A4/89), as used
 // after a re-key during reset/initialize. The drive must be in HID mode.
 void set_password(Channel& ch, std::string_view new_password, Account account = Account::Admin);
