@@ -183,12 +183,15 @@ geometry. The drive applies the new layout on a **power cycle**. Over the
 default HID path that means one physical unplug/replug after `reset`; with the
 SCSI path (below) it is done in software, so the whole flow is hands-off.
 
-**Passphrase mode** — passwords may be up to 64 characters, but the device is
-verified on the **first 16 characters** only (one AES block; no hashing): the
-set token and the login block are both `enc(password[0:16])`. Longer input is
-accepted and truncated to 16 for the cryptographic check. (The set token must
-stay 16 bytes for one account — the device reads a 32-byte token as *two*
-accounts, inferring the count from the payload length.)
+**Passphrase mode** — passwords may be up to 64 characters. The 16-byte value
+the device verifies is derived exactly as the vendor app does (reverse-
+engineered from `IronKey.app` and hardware-verified): **≤ 16 chars** are the raw
+UTF-8 bytes zero-padded to 16; **17–64 chars** are folded to 16 bytes with
+`MD5(utf8(password))`, so the *whole* passphrase counts. The set token and the
+login block use the same derivation, so provisioning and login agree and both
+interoperate with the vendor software. (The set token must stay 16 bytes for one
+account — the device reads a 32-byte token as *two* accounts, inferring the
+count from the payload length.)
 
 **Owner info** — the drive stores a contact profile (name, company,
 description, and the admin/user password *hints*) in its protected hidden area,

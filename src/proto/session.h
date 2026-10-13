@@ -28,8 +28,8 @@ public:
 };
 
 // A complex password is at most 16 bytes (one AES block). Passphrase mode
-// accepts up to 64 characters; the device stores the first 32 and, at login,
-// verifies only the first 16 (one block) — see session.cpp.
+// accepts up to 64 characters; it is folded into one 16-byte block via MD5, so
+// the whole string counts — see password_block() in session.cpp.
 constexpr size_t kMaxPasswordBytes = 16;
 constexpr size_t kMaxPassphraseBytes = 64;
 
@@ -78,6 +78,11 @@ extern const std::array<uint8_t, 64> kPvc0Key;
 // Lowers the most significant non-zero byte of `buf` so the value is below
 // the device modulus. Mirrors the vendor application.
 Bytes clamp_to_modulus(ByteView buf, ByteView n_dev);
+
+// The 16-byte value the device verifies, before the session AES-ECB. Matches
+// the vendor app: UTF-8 bytes zero-padded for length <= 16, else MD5 of the
+// UTF-8 bytes (passphrase, length 17..64). See session.cpp.
+std::array<uint8_t, 16> password_block(std::string_view password);
 
 // encryptPVCKey from the vendor application. `random32` is the 32 bytes of
 // padding that end up in the last two AES blocks.

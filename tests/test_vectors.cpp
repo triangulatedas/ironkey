@@ -164,6 +164,23 @@ TEST(full_unlock_transcript_matches_python)
     }
 }
 
+TEST(password_block_matches_vendor_hashPassword)
+{
+    auto blk = [](std::string_view p) {
+        auto b = password_block(p);
+        return hex(ByteView(b.data(), b.size()));
+    };
+    // Length <= 16: raw UTF-8, zero-padded to 16 bytes. Hardware-verified with
+    // this exact 16-char string (set as a "passphrase" in the vendor app, which
+    // does not hash at <= 16 chars).
+    CHECK_EQ(blk("Abcd1234#$!!geir"), std::string("41626364313233342324212167656972"));
+    CHECK_EQ(blk("abc"), std::string("61626300000000000000000000000000"));
+    // Length >= 17: MD5 of the UTF-8 bytes. Hardware-verified with this 29-char
+    // passphrase; md5("Dette er en innmari lang text") = 26003f01...
+    CHECK_EQ(blk("Dette er en innmari lang text"),
+             std::string("26003f01ddc64bc36b9526317bfc1971"));
+}
+
 TEST(password_too_long_is_rejected_before_sending)
 {
     ReplayDevice dev;

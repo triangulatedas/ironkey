@@ -12,6 +12,32 @@ const std::array<uint8_t, 64> kPvc0Key = {
     0x21, 0x5c, 0x80, 0xb7, 0x5c, 0x4e, 0x10, 0xdd, 0x64, 0x42, 0xff, 0xac, 0xbc, 0xbd, 0x16, 0x84,
 };
 
+// The 16-byte block the device actually verifies, before the session AES-ECB.
+// This exactly matches the vendor app's DriveSDK::hashPassword (reverse-
+// engineered from IronKey.app, hardware-verified on a Locker+50G2):
+//
+//  - Length <= 16: the UTF-8 bytes, zero-padded to one 16-byte block. The device
+//    compares this directly. Every character counts; there is no character past
+//    the 16th in this mode.
+//  - Length 17..64 (passphrase): MD5 of the UTF-8 bytes (a 16-byte digest), so
+//    the whole string folds into one block. The vendor uses exactly this cutoff
+//    (length >= 17 -> MD5) and Qt's QCryptographicHash with algorithm 1 (MD5).
+//
+// The device always receives one 16-byte block for both the FF A2 set token and
+// the FF A4 login, which is why both branches produce 16 bytes.
+std::array<uint8_t, 16> password_block(std::string_view password)
+{
+    std::array<uint8_t, 16> block{};
+    if (password.size() <= 16) {
+        std::copy_n(password.begin(), password.size(), block.begin());
+        return block;
+    }
+    ByteView pp(reinterpret_cast<const uint8_t*>(password.data()), password.size());
+    auto digest = md5(pp);
+    std::copy_n(digest.begin(), 16, block.begin());
+    return block;
+}
+
 namespace {
 
 Bytes read_exact(Channel& ch, uint8_t sub, uint32_t len, const char* what)
@@ -22,23 +48,21 @@ Bytes read_exact(Channel& ch, uint8_t sub, uint32_t len, const char* what)
     return resp;
 }
 
-// FF A4 login / verify payload (always one block): the first 16 bytes of the
-// password, AES-encrypted. A passphrase is checked on its first block only,
-// so this is identical for complex passwords and passphrases.
+// FF A4 login / verify payload (always one block): password_block(), AES-ECB
+// encrypted with the session key. Identical shape for complex and passphrase.
 Key128 encrypt_login(const Key128& shared, std::string_view password)
 {
-    std::array<uint8_t, 16> plaintext{};
-    std::copy_n(password.begin(), std::min<size_t>(password.size(), 16), plaintext.begin());
+    std::array<uint8_t, 16> plaintext = password_block(password);
     Key128 enc = aes128_ecb_encrypt(shared, plaintext);
     secure_wipe(plaintext.data(), plaintext.size());
     return enc;
 }
 
-// FF A2 set token for one account: 16 bytes = the first 16 characters of the
-// password, AES-encrypted (one ECB block). The device infers the number of
-// accounts from the payload length ((len-4)/16), so this MUST stay 16 bytes for
-// a single account — a 32-byte token is read as two accounts (see PROTOCOL.md).
-// A passphrase is therefore verified on its first 16 characters, like a login.
+// FF A2 set token for one account: 16 bytes = password_block() AES-encrypted
+// (one ECB block) — the same block the login verifies, so set and login always
+// agree. The device infers the number of accounts from the payload length
+// ((len-4)/16), so this MUST stay 16 bytes for a single account — a 32-byte
+// token is read as two accounts (see PROTOCOL.md).
 Bytes make_set_token(const Key128& shared, std::string_view password)
 {
     Key128 t = encrypt_login(shared, password);

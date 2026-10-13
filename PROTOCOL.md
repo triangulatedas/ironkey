@@ -238,13 +238,38 @@ bytes.
 
 ```
 Output report:  subcommand=0xA4, CDB[3]=0x00, CDB[4]=0x00, CDB[5]=0x00, CDB[6]=0x06
-Feature data:   AES-128-ECB(shared_secret, password_padded) — 16 bytes
+Feature data:   AES-128-ECB(shared_secret, password_block) — 16 bytes
 ```
 
-The user password is zero-padded to 16 bytes (max 16 bytes) and
+`password_block` is the 16-byte value the device actually verifies, then
 AES-128-ECB encrypted with the shared secret. Byte 0x06 of the status report
 for this command is 1 if the password was wrong (see "Interrupt Response
 Format").
+
+#### Deriving `password_block` (vendor-compatible)
+
+Reverse-engineered from the vendor application's `DriveSDK::hashPassword`
+(`IronKey.app`, a Qt app; confirmed on both the x86_64 and arm64 slices) and
+verified on a Locker+50G2:
+
+- **Length ≤ 16** — the UTF-8 password bytes, zero-padded to 16. The device
+  compares this directly; every byte counts, and there is nothing past byte 16.
+- **Length 17–64 (passphrase)** — `MD5(utf8(password))` (a 16-byte digest). The
+  vendor uses exactly this cutoff (`length >= 17`) and Qt's `QCryptographicHash`
+  algorithm `1` (MD5). This is why a long passphrase needs the *whole* string:
+  the full text feeds the MD5, and its first/only 16 bytes become the block.
+
+The set-token (`FF A2`) uses the same `password_block`, so provisioning and
+login always agree, and both interoperate with the vendor app.
+
+Hardware-verified examples:
+- `"Abcd1234#$!!geir"` (16 chars) → `41626364313233342324212167656972`
+- `"Dette er en innmari lang text"` (29 chars) →
+  `md5` = `26003f01ddc64bc36b9526317bfc1971`
+
+The vendor app also has a separate `MyAes`/`CRijndael` transform with a fixed
+`"PDMG…"` key (`encryptPasssword`); that is for *local* password handling, **not**
+the device token — a red herring during reverse-engineering.
 
 CDB parameters:
 - CDB[3] = secureType (0x00)

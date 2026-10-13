@@ -53,5 +53,8 @@ Key128 aes128_ecb_encrypt(const Key128& key, ByteView block);
 // Decrypts one or more 16-byte blocks (AES-128-ECB, no padding).
 Bytes aes128_ecb_decrypt(const Key128& key, ByteView data);
 std::array<uint8_t, 32> sha256(ByteView data);
+// The vendor derives the login block for passphrases (length 17..64) as the
+// MD5 of the UTF-8 password; see session.cpp password_block().
+std::array<uint8_t, 16> md5(ByteView data);
 
 }  // namespace ironkey

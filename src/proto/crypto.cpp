@@ -171,4 +171,13 @@ std::array<uint8_t, 32> sha256(ByteView data)
     return out;
 }
 
+std::array<uint8_t, 16> md5(ByteView data)
+{
+    std::array<uint8_t, 16> out{};
+    unsigned int len = 0;
+    if (EVP_Digest(data.data(), data.size(), out.data(), &len, EVP_md5(), nullptr) != 1)
+        fail("EVP_Digest(md5)");
+    return out;
+}
+
 }  // namespace ironkey
