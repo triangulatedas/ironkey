@@ -241,7 +241,22 @@ run operations on the existing per-port worker model.
    already HID; never switches a locked drive to HID). Verified live on GNOME via
    busctl: submenu, status line, and a Show-hint click that left the drive in
    locked storage mode. Also surfaced as `ironkey-unlock status`.
-4. **Wizard** — single-password setup + owner info + optional format.
-5. **Admin/user** — login account choice now; user-account *provisioning* done
-   (`reset --admin-user` / `reset_device(ch, admin, user)`), so the wizard just
-   needs the two-password form.
+4. **Wizard — done.** A `Reset / Set up…` item per locked drive opens a GTK
+   wizard (`ironkey-gui`, see below): confirm-erase → single vs admin+user →
+   password(s) with live strength + hint → owner info → finish (drive name, fs
+   under a Custom expander, default exFAT). The agent collects the answers and
+   runs `reset_device_auto` + optional unlock-and-format.
+5. **Admin/user — done.** The unlock dialog (`ironkey-gui unlock`) has an
+   in-dialog user/admin toggle on two-account drives (default user), plain
+   "password" otherwise; the worker builds the Login from the dialog's choice.
+   User-account *provisioning* via `reset --admin-user` was already done.
+
+## GUI front-end (`ironkey-gui`)
+
+The dialogs are a separate optional GTK3 binary, `ironkey-gui`, not zenity (which
+was too limited — no single-window wizard, no live strength meter). The core
+(CLI + agent + tray) still links no GUI toolkit; only `ironkey-gui` links GTK3,
+built only when `gtk+-3.0` is present. The agent spawns it (`unlock` / `setup`),
+reads `key=value` on stdout, and performs all device I/O itself, so GTK never
+touches the device code. When `ironkey-gui` is absent the agent falls back to the
+zenity/kdialog sequence. Located via `$IRONKEY_GUI`, next to the agent, or PATH.
