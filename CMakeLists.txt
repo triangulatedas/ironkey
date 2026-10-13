@@ -57,6 +57,20 @@ add_executable(ironkey-agent
 target_link_libraries(ironkey-agent PRIVATE ironkey_linux PkgConfig::SYSTEMD)
 target_compile_options(ironkey-agent PRIVATE ${IRONKEY_WARNINGS})
 
+# Optional GTK3 front-end (ironkey-gui): richer unlock dialog and setup wizard.
+# Built only when GTK3 is available; the CLI and agent never link it, and the
+# agent falls back to zenity/kdialog when the binary is absent.
+pkg_check_modules(GTK3 IMPORTED_TARGET gtk+-3.0)
+if(GTK3_FOUND)
+    add_executable(ironkey-gui src/gui/ironkey_gui.cpp)
+    target_link_libraries(ironkey-gui PRIVATE PkgConfig::GTK3)
+    target_compile_options(ironkey-gui PRIVATE -Wall -Wextra)
+    install(TARGETS ironkey-gui RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    message(STATUS "ironkey-gui: building GTK3 front-end (${GTK3_VERSION})")
+else()
+    message(STATUS "ironkey-gui: GTK3 not found; the agent will fall back to zenity/kdialog")
+endif()
+
 # Tiny privileged helper: only issues SG_IO. Install with
 # `setcap cap_sys_rawio+ep` so the unprivileged main tool can send vendor
 # commands over SCSI without holding the capability itself.
