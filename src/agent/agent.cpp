@@ -196,10 +196,10 @@ void Agent::run(Worker& w, const std::string& port, DryRun dry_run,
                 return finish(State::Done);
             }
 
-            if (password->empty() || password->size() > kMaxPasswordBytes) {
+            if (password->empty() || password->size() > kMaxPassphraseBytes) {
                 secure_wipe(password->data(), password->capacity());
-                message = prompt("The password must be 1 to 16 characters (passphrase mode is "
-                                 "not supported yet). Nothing was sent to the drive.");
+                message = prompt("The password must be 1 to 64 characters. Nothing was sent to "
+                                 "the drive.");
                 continue;
             }
 
