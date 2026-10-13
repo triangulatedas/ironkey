@@ -222,11 +222,10 @@ run operations on the existing per-port worker model.
 
 ## Phases
 
-1. **Refactor** — extract `find_scsi_helper` / `scsi_usable` / `reset_device_auto`
-   / `reenumerate` into `device_ops`; CLI unchanged. (Small, low-risk.)
-   *Partly done:* `find_scsi_helper` and `scsi_usable` now live in `device_ops`
-   (the CLI calls them via `using namespace ironkey`); `reset_device_auto` /
-   `reenumerate` are still inline in the CLI.
+1. **Refactor — done.** `find_scsi_helper`, `scsi_usable`, `reset_device_auto`
+   and `reenumerate` now live in `device_ops`; `cmd_reset` is a thin caller that
+   keeps only the UI (prompts + next-steps text). The agent/tray reuse the same
+   reset flow via `reset_device_auto(dev, admin, user, profile, prefer, log)`.
 2. **Tray shell** — SNI + DBusMenu over sd-bus; a static menu that lists drives
    and does Unlock/Lock via the existing worker. Validate on the target desktop.
 3. **Status & hint** — failed-count line and on-click hint, read over SCSI when
