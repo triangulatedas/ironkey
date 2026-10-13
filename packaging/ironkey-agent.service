@@ -1,7 +1,6 @@
 [Unit]
-Description=IronKey unlock agent
+Description=IronKey unlock agent (tray + auto-unlock prompt)
 Documentation=https://github.com/triangulatedas/ironkey
-PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
@@ -10,4 +9,7 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=graphical-session.target
+# default.target is reached whenever the user's systemd manager starts (login),
+# so the agent autostarts reliably across desktops. It degrades gracefully with
+# no display (headless: no tray, no dialogs), so starting it always is safe.
+WantedBy=default.target
