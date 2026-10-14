@@ -321,17 +321,18 @@ ctest --test-dir build --output-on-failure
 
 The GTK front-end (`ironkey-gui`: the rich unlock dialog and setup wizard) is
 **optional** — it builds only if GTK 3 is present, and the CLI and agent never
-link it. Install `libgtk-3-dev` to build it; without it the agent falls back to
-zenity/kdialog dialogs. The core tools depend only on OpenSSL, libudev and
-libsystemd.
+link it. Install `libgtk-3-dev` to build it; without it the agent's tray still
+works, but it cannot show its dialogs (use the CLI instead). The core tools
+depend only on OpenSSL, libudev and libsystemd.
 
 ## Usage
 
 ### Agent
 
 `ironkey-agent` runs in your desktop session. When an IronKey is plugged in, it
-shows an unlock dialog — the GTK `ironkey-gui` dialog when it is installed
-(with an admin/user toggle on two-account drives), otherwise zenity/kdialog.
+shows an unlock dialog from `ironkey-gui` (with an admin/user toggle on
+two-account drives). Without `ironkey-gui` it shows a notification pointing to
+the CLI instead.
 After unlocking, the drive is mounted by the desktop as usual and a notification
 shows which disk it is.
 

@@ -77,8 +77,8 @@ target_link_libraries(ironkey-agent PRIVATE ironkey_linux PkgConfig::SYSTEMD)
 target_compile_options(ironkey-agent PRIVATE ${IRONKEY_WARNINGS})
 
 # Optional GTK3 front-end (ironkey-gui): richer unlock dialog and setup wizard.
-# Built only when GTK3 is available; the CLI and agent never link it, and the
-# agent falls back to zenity/kdialog when the binary is absent.
+# Built only when GTK3 is available; the CLI and agent never link it. Without
+# it the agent still runs the tray, but cannot show its dialogs.
 pkg_check_modules(GTK3 IMPORTED_TARGET gtk+-3.0)
 if(GTK3_FOUND)
     add_executable(ironkey-gui src/gui/ironkey_gui.cpp)
@@ -87,7 +87,7 @@ if(GTK3_FOUND)
     install(TARGETS ironkey-gui RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT gui)
     message(STATUS "ironkey-gui: building GTK3 front-end (${GTK3_VERSION})")
 else()
-    message(STATUS "ironkey-gui: GTK3 not found; the agent will fall back to zenity/kdialog")
+    message(STATUS "ironkey-gui: GTK3 not found; the agent will have no dialogs")
 endif()
 
 # Tiny privileged helper: only issues SG_IO. Install with
@@ -142,8 +142,8 @@ if(UNIX AND NOT APPLE)
     set(CPACK_DEBIAN_CORE_PACKAGE_NAME "ironkey")
     set(CPACK_COMPONENT_CORE_DESCRIPTION
         "Unlock and manage Kingston IronKey Locker+ G2 drives on Linux")
-    set(CPACK_DEBIAN_CORE_PACKAGE_DEPENDS "udisks2")          # + shlibs auto-added
-    set(CPACK_DEBIAN_CORE_PACKAGE_RECOMMENDS "ironkey-gui, zenity | kdialog")
+    set(CPACK_DEBIAN_CORE_PACKAGE_DEPENDS "udisks2, eject")   # + shlibs auto-added
+    set(CPACK_DEBIAN_CORE_PACKAGE_RECOMMENDS "ironkey-gui")
     set(CPACK_DEBIAN_CORE_PACKAGE_CONTROL_EXTRA
         "${CMAKE_SOURCE_DIR}/packaging/deb/postinst;${CMAKE_SOURCE_DIR}/packaging/deb/postrm")
 

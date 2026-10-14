@@ -7,7 +7,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <cctype>
 #include <cerrno>
 #include <initializer_list>
 #include <optional>
@@ -196,177 +195,6 @@ GuiStatus collect_via_gui(const std::string& desc, SetupRequest& req)
     return gs;
 }
 
-// ===================== zenity fallback front-end ============================
-
-[[gnu::noinline]] std::optional<std::string> run_zenity(std::initializer_list<std::string_view> args)
-{
-    Captured c = spawn_capture("zenity", args);
-    if (!c.spawned || c.exit_code != 0) {
-        secure_wipe(c.out.data(), c.out.capacity());
-        return std::nullopt;
-    }
-    if (!c.out.empty() && c.out.back() == '\n')
-        c.out.pop_back();
-    return c.out;
-}
-
-std::optional<std::string> ask_secret(const std::string& title, const std::string& text)
-{
-    return run_zenity({"--entry", "--hide-text", "--width=460", "--title", title, "--text", text});
-}
-
-std::optional<std::string> ask_text(const std::string& title, const std::string& text)
-{
-    return run_zenity({"--entry", "--width=460", "--title", title, "--text", text});
-}
-
-void warn_box(const std::string& text)
-{
-    run_zenity({"--warning", "--icon=dialog-warning", "--width=420", "--text", text});
-}
-
-bool confirm_warn(const std::string& text, const std::string& ok, const std::string& cancel)
-{
-    return run_zenity({"--question", "--icon=dialog-warning", "--width=480", "--default-cancel",
-                       "--text", text, "--ok-label", ok, "--cancel-label", cancel})
-        .has_value();
-}
-
-const char* password_strength(const std::string& p)
-{
-    bool lo = false, up = false, di = false, ot = false;
-    for (unsigned char c : p) {
-        if (std::islower(c))
-            lo = true;
-        else if (std::isupper(c))
-            up = true;
-        else if (std::isdigit(c))
-            di = true;
-        else
-            ot = true;
-    }
-    int classes = lo + up + di + ot;
-    size_t n = p.size();
-    if (n >= 12 && classes >= 3)
-        return "Strong";
-    if (n >= 10 && classes >= 2)
-        return "Good";
-    if (n >= 8)
-        return "Fair";
-    return "Weak";
-}
-
-bool collect_password_zenity(const std::string& who, std::string& out_pw, std::string& out_hint)
-{
-    for (;;) {
-        auto pw = ask_secret("Set the " + who + "password",
-                             "Choose a password of <b>at least 6 characters</b>. 10 or more is "
-                             "strongly recommended.");
-        if (!pw)
-            return false;
-        if (pw->size() < 6) {
-            warn_box("The password must be at least 6 characters.");
-            wipe(*pw);
-            continue;
-        }
-        const char* s = password_strength(*pw);
-        auto cf = ask_secret("Confirm password",
-                             std::string("Strength: <b>") + s + "</b>\nRe-enter the same password.");
-        if (!cf) {
-            wipe(*pw);
-            return false;
-        }
-        bool match = (*pw == *cf);
-        wipe(*cf);
-        if (!match) {
-            warn_box("The passwords did not match. Please try again.");
-            wipe(*pw);
-            continue;
-        }
-        if (pw->size() < 10 &&
-            !confirm_warn("Short password (" + std::to_string(pw->size()) + " chars, strength <b>" +
-                              s + "</b>). Use it anyway?",
-                          "Use it anyway", "Change it")) {
-            wipe(*pw);
-            continue;
-        }
-        auto hint = ask_text("Password hint (optional)",
-                             "Shown before unlock, on any computer. Not the password itself.");
-        out_pw = *pw;
-        wipe(*pw);
-        out_hint = hint ? *hint : std::string();
-        return true;
-    }
-}
-
-// Returns false if the user cancelled.
-bool collect_via_zenity(const UsbDevice& dev, SetupRequest& req)
-{
-    const std::string desc = short_desc(dev);
-    if (!confirm_warn("<b>Erase “" + desc +
-                          "” and set it up?</b>\n\nThis permanently deletes everything on the "
-                          "drive. You will choose a new password next; no current password is "
-                          "needed.",
-                      "Erase and set up", "Cancel"))
-        return false;
-
-    auto mode = run_zenity(
-        {"--list", "--radiolist", "--title", "User account", "--width=460", "--height=300",
-         "--print-column", "2", "--hide-column", "2", "--text",
-         "A separate <b>user</b> account is optional. The admin can reset the user's password; the "
-         "user cannot change the admin's. Most people need just one.",
-         "--column", "", "--column", "key", "--column", "Set up", "TRUE", "single",
-         "Just one password  (recommended)", "FALSE", "both", "Admin + a separate user account"});
-    if (!mode)
-        return false;
-    req.with_user = (*mode == "both");
-
-    if (!collect_password_zenity(req.with_user ? "admin " : "", req.admin_pw, req.admin_hint))
-        return false;
-    if (req.with_user && !collect_password_zenity("user ", req.user_pw, req.user_hint))
-        return false;
-
-    if (auto info = run_zenity({"--forms", "--title", "Owner info (optional)", "--width=480",
-                               "--separator", std::string(1, '\x1f'), "--text",
-                               "Stored on the drive, readable before unlock. Leave blank to skip.",
-                               "--add-entry", "Name", "--add-entry", "Company", "--add-entry",
-                               "Description"})) {
-        std::vector<std::string> f;
-        size_t start = 0;
-        for (;;) {
-            size_t sep = info->find('\x1f', start);
-            f.push_back(info->substr(start, sep - start));
-            if (sep == std::string::npos)
-                break;
-            start = sep + 1;
-        }
-        if (f.size() > 0)
-            req.name = f[0];
-        if (f.size() > 1)
-            req.company = f[1];
-        if (f.size() > 2)
-            req.description = f[2];
-    }
-
-    auto fs = run_zenity(
-        {"--list", "--radiolist", "--title", "Format the data disk?", "--width=480", "--height=300",
-         "--print-column", "2", "--hide-column", "2", "--text",
-         "Optionally create a filesystem now:", "--column", "", "--column", "key", "--column",
-         "Filesystem", "TRUE", "exfat", "exFAT — Windows, macOS and Linux", "FALSE", "vfat",
-         "FAT32 — most compatible, no files over 4 GB", "FALSE", "ext4", "ext4 — Linux only",
-         "FALSE", "none", "Don't format now"});
-    req.format = fs ? *fs : "none";
-    if (req.format != "none" && req.format != "exfat" && req.format != "vfat" &&
-        req.format != "ext4")
-        req.format = "none";
-    if (req.format != "none") {
-        auto label = ask_text("Volume label", "A name for the formatted disk.");
-        if (label && !label->empty())
-            req.label = *label;
-    }
-    return true;
-}
-
 // ===================== shared: perform the reset ============================
 
 void perform_setup(const std::string& port, const std::string& desc, SetupRequest& req)
@@ -437,15 +265,14 @@ void run_setup_wizard(std::string port, bool dry_run)
 
     SetupRequest req;
     GuiStatus gs = collect_via_gui(desc, req);
+    if (gs == GuiStatus::Unavailable) {
+        notify("IronKey", "The setup dialog needs the ironkey-gui package. Install it, or use "
+                          "`ironkey-unlock reset`.",
+               true);
+        return;
+    }
     if (gs == GuiStatus::Cancelled)
         return;
-    if (gs == GuiStatus::Unavailable) {
-        // No ironkey-gui; fall back to the zenity dialog sequence.
-        if (!collect_via_zenity(dev, req)) {
-            wipe(req);
-            return;
-        }
-    }
 
     if (dry_run) {
         notify("IronKey dry run",

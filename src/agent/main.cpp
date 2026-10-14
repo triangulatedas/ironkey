@@ -76,13 +76,13 @@ int main(int argc, char** argv)
         // Monitor first, then scan, so no device slips between the two.
         UdevMonitor monitor;
         Agent agent(dry_run, account);
-        std::string dialog = PasswordDialog::program();
-        std::fprintf(stderr, "ironkey-agent started%s (login: %s, password dialog: %s)\n",
+        std::fprintf(stderr, "ironkey-agent started%s (login: %s, dialogs: %s)\n",
                      dry_run == Agent::DryRun::Off    ? ""
                      : dry_run == Agent::DryRun::Fail ? " in DRY RUN (fail) mode"
                                                       : " in DRY RUN mode",
                      account ? to_string(*account) : "by drive setup",
-                     dialog.empty() ? "none found - install zenity or kdialog" : dialog.c_str());
+                     PasswordDialog::gui_available() ? "ironkey-gui"
+                                                     : "none - install ironkey-gui");
         agent.scan();
 
         // System-tray icon (StatusNotifierItem + dbusmenu over sd-bus). If no
@@ -148,7 +148,7 @@ int main(int argc, char** argv)
             .setup =
                 [&agent, dry = dry_run != Agent::DryRun::Off](std::string port) {
                     agent.dismiss_prompt(port);
-                    // The wizard blocks on zenity dialogs, so it must not run on
+                    // The wizard blocks on its dialog, so it must not run on
                     // the event-loop thread. It is self-contained, so detach it.
                     std::thread(run_setup_wizard, std::move(port), dry).detach();
                 },

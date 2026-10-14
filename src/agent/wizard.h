@@ -5,7 +5,7 @@
 
 namespace ironkey {
 
-// Runs the interactive reset / initialize wizard (a zenity dialog sequence) for
+// Runs the interactive reset / initialize wizard (ironkey-gui setup) for
 // the drive on `port`, then performs the reset. This blocks on user input, so
 // call it on a background thread — never on the agent's event-loop thread. It is
 // self-contained (captures `port` by value and uses only free device_ops/notify

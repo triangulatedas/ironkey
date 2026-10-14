@@ -12,10 +12,9 @@
 
 namespace ironkey {
 
-// Graphical unlock prompt. Prefers the GTK front-end (ironkey-gui), which can
-// offer an in-dialog admin/user toggle; falls back to zenity/kdialog for just
-// the password. Either way it runs as a child process and reads the result from
-// stdout, so no GUI toolkit is linked into the agent.
+// Graphical unlock prompt via the GTK front-end (ironkey-gui), which can offer
+// an in-dialog admin/user toggle. It runs as a child process and reads the
+// result from stdout, so no GUI toolkit is linked into the agent.
 class PasswordDialog {
 public:
     // The user's answer from ask_unlock().
@@ -26,19 +25,16 @@ public:
 
     // Blocks until the user answers. `admin_user` shows the account toggle (on a
     // drive with both accounts); `forced` pins the account and hides the toggle;
-    // `note` is an optional warning line. Returns nullopt on cancel / no dialog /
-    // cancel(). The GTK dialog is preferred; zenity is the fallback.
+    // `note` is an optional warning line. Returns nullopt on cancel / cancel(),
+    // or (after a notification saying so) when ironkey-gui is not installed.
     std::optional<UnlockChoice> ask_unlock(const std::string& label, bool admin_user,
                                            std::optional<Account> forced, const std::string& note);
-
-    // Plain password entry via zenity/kdialog. Returns nullopt as above.
-    std::optional<std::string> ask(const std::string& title, const std::string& text);
 
     // Closes a running dialog. Safe to call from another thread.
     void cancel();
 
-    // Name of the zenity/kdialog program that will be used, or empty if none.
-    static std::string program();
+    // Whether ironkey-gui can be found ($IRONKEY_GUI, next to the agent, or PATH).
+    static bool gui_available();
 
 private:
     struct Capture {

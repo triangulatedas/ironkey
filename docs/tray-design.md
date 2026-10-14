@@ -258,5 +258,7 @@ was too limited — no single-window wizard, no live strength meter). The core
 (CLI + agent + tray) still links no GUI toolkit; only `ironkey-gui` links GTK3,
 built only when `gtk+-3.0` is present. The agent spawns it (`unlock` / `setup`),
 reads `key=value` on stdout, and performs all device I/O itself, so GTK never
-touches the device code. When `ironkey-gui` is absent the agent falls back to the
-zenity/kdialog sequence. Located via `$IRONKEY_GUI`, next to the agent, or PATH.
+touches the device code. The zenity/kdialog fallback was removed in 0.1.3 (zenity
+pulled GTK4, libadwaita, gstreamer and Mesa onto minimal systems); without
+`ironkey-gui` the agent shows a notification pointing to the CLI. Located via
+`$IRONKEY_GUI`, next to the agent, or PATH.

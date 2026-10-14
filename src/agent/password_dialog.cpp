@@ -12,6 +12,7 @@
 #include <sstream>
 #include <vector>
 
+#include "agent/notify.h"
 #include "proto/bytes.h"
 
 extern char** environ;
@@ -29,20 +30,6 @@ bool in_path(const std::string& name)
         if (!dir.empty() && ::access((dir + "/" + name).c_str(), X_OK) == 0)
             return true;
     return false;
-}
-
-std::string escape_markup(const std::string& s)
-{
-    std::string out;
-    for (char c : s) {
-        switch (c) {
-        case '&': out += "&amp;"; break;
-        case '<': out += "&lt;"; break;
-        case '>': out += "&gt;"; break;
-        default: out += c;
-        }
-    }
-    return out;
 }
 
 // $IRONKEY_GUI, else next to this executable, else "ironkey-gui" on PATH.
@@ -64,15 +51,10 @@ std::string find_gui()
 
 }  // namespace
 
-std::string PasswordDialog::program()
+bool PasswordDialog::gui_available()
 {
-    const char* desktop = std::getenv("XDG_CURRENT_DESKTOP");
-    bool kde = desktop && std::string(desktop).find("KDE") != std::string::npos;
-    const char* order[] = {kde ? "kdialog" : "zenity", kde ? "zenity" : "kdialog"};
-    for (const char* p : order)
-        if (in_path(p))
-            return p;
-    return {};
+    std::string gui = find_gui();
+    return gui.find('/') != std::string::npos ? ::access(gui.c_str(), X_OK) == 0 : in_path(gui);
 }
 
 PasswordDialog::Capture PasswordDialog::run_capture(const std::vector<std::string>& args)
@@ -137,29 +119,6 @@ PasswordDialog::Capture PasswordDialog::run_capture(const std::vector<std::strin
     return cap;
 }
 
-std::optional<std::string> PasswordDialog::ask(const std::string& title, const std::string& text)
-{
-    std::string prog = program();
-    if (prog.empty())
-        return std::nullopt;
-
-    std::vector<std::string> args;
-    if (prog == "zenity")
-        args = {"zenity",       "--entry", "--hide-text", "--width=440", "--title", title, "--text",
-                escape_markup(text)};
-    else
-        args = {"kdialog", "--title", title, "--password", text};
-
-    Capture cap = run_capture(args);
-    if (!cap.spawned || cap.code != 0) {
-        secure_wipe(cap.out.data(), cap.out.capacity());
-        return std::nullopt;
-    }
-    if (!cap.out.empty() && cap.out.back() == '\n')
-        cap.out.pop_back();
-    return cap.out;
-}
-
 std::optional<PasswordDialog::UnlockChoice> PasswordDialog::ask_unlock(const std::string& label,
                                                                        bool admin_user,
                                                                        std::optional<Account> forced,
@@ -203,20 +162,10 @@ std::optional<PasswordDialog::UnlockChoice> PasswordDialog::ask_unlock(const std
         return choice;
     }
 
-    // Fallback: zenity/kdialog for the password only (account = forced/default).
-    std::string text = (note.empty() ? "" : note + "\n\n") + "Enter the " +
-                       std::string(def == Account::User ? "user password"
-                                   : admin_user          ? "admin password"
-                                                         : "password") +
-                       " for " + label;
-    auto pw = ask("Unlock IronKey", text);
-    if (!pw)
-        return std::nullopt;
-    UnlockChoice choice;
-    choice.password = *pw;
-    choice.account = def;
-    secure_wipe(pw->data(), pw->capacity());
-    return choice;
+    notify("IronKey", "The unlock dialog needs the ironkey-gui package. Install it, or use "
+                      "`ironkey-unlock unlock`.",
+           true);
+    return std::nullopt;
 }
 
 void PasswordDialog::cancel()
