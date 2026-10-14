@@ -245,6 +245,12 @@ void Agent::run(Worker& w, const std::string& port, DryRun dry_run,
                     return finish(State::Done);
                 }
 
+                // Keep the tray from reading the drive while we switch and log
+                // in: its status read would share the HID channel and eat our
+                // acks ("No acknowledgement for command 0x81").
+                BusyPorts::Guard busy(port);
+                if (!busy.owns())
+                    throw IronKeyError("Another operation is running on this drive");
                 log(port, "Logging in with the " + login.password_name());
                 w.state = State::Switching;
                 ensure_hid_mode(dev, worker_log);
