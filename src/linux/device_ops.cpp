@@ -109,6 +109,10 @@ void ensure_hid_mode(UsbDevice& dev, const Log& log)
         return;
     check_access(dev);
 
+    // An unlocked drive drops its data disk when it switches; unmount it cleanly
+    // first rather than yank a mounted filesystem.
+    if (dev.is_unlocked())
+        unmount_all(dev);
     for (const auto& problem : release_volumes(dev))
         log("Warning: " + problem);
 
@@ -316,9 +320,8 @@ void change_password_device(UsbDevice& dev, std::string_view old_password,
                             std::string_view new_password, const Login& login, const Log& log,
                             bool trace)
 {
-    if (new_password.empty() || new_password.size() > kMaxPasswordBytes)
-        throw UnlockError("New password must be 1 to 16 bytes. Passphrase mode (10-64 "
-                          "characters) is not supported yet");
+    if (new_password.empty() || new_password.size() > kMaxPassphraseBytes)
+        throw UnlockError("New password must be 1 to 64 characters");
     if (!dev.in_hid_mode())
         throw IronKeyError("Device is not in HID mode");
 

@@ -28,6 +28,7 @@ public:
         bool unlocked = false;
         bool admin_user = false;  // has a separate user account (reset-user-pw applies)
         std::string status; // one-line status for a disabled menu entry, or empty
+        bool busy = false;  // an operation is running on it: status line only, no actions
     };
 
     struct Callbacks {

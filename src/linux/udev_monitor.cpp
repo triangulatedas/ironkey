@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "linux/udev_monitor.h"
 
+#include "linux/usb_topology.h"
+
 #include <libudev.h>
 
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 
@@ -31,6 +34,9 @@ UdevMonitor::UdevMonitor()
         throw std::runtime_error("udev_monitor_new_from_netlink failed");
     }
     udev_monitor_filter_add_match_subsystem_devtype(monitor_, "usb", "usb_device");
+    // Unlocking (and locking) changes the data disk's media without a USB
+    // add/remove, so watch disks too; receive() keeps only Kingston ones.
+    udev_monitor_filter_add_match_subsystem_devtype(monitor_, "block", "disk");
     if (udev_monitor_enable_receiving(monitor_) < 0) {
         udev_monitor_unref(monitor_);
         udev_unref(udev_);
@@ -56,6 +62,23 @@ std::optional<UsbEvent> UdevMonitor::receive()
         return std::nullopt;
 
     UsbEvent ev;
+    const char* subsystem = udev_device_get_subsystem(dev);
+    if (subsystem && std::strcmp(subsystem, "block") == 0) {
+        // Reported as Other on the owning USB device's port: a change to look
+        // at, never a plug-in or unplug.
+        udev_device* usb = udev_device_get_parent_with_subsystem_devtype(dev, "usb", "usb_device");
+        const char* vid = usb ? udev_device_get_sysattr_value(usb, "idVendor") : nullptr;
+        if (vid) {
+            ev.vid = static_cast<uint16_t>(std::strtoul(vid, nullptr, 16));
+            if (const char* name = udev_device_get_sysname(usb))
+                ev.port = name;
+        }
+        udev_device_unref(dev);  // also frees `usb`, which it owns
+        if (ev.vid != kKingstonVid)
+            return UsbEvent{};  // someone else's disk: an empty, ignorable event
+        return ev;
+    }
+
     const char* action = udev_device_get_action(dev);
     if (action && std::strcmp(action, "add") == 0)
         ev.action = UsbEvent::Action::Add;

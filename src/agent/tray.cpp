@@ -215,7 +215,9 @@ void Tray::rebuild_items()
         auto sep = [&] {
             sub.children.push_back({id++, Kind::Separator, "", "", Act::None, true, {}});
         };
-        if (d.unlocked) {
+        if (d.busy) {
+            // Status line only; actions return when the operation finishes.
+        } else if (d.unlocked) {
             child("Open", Act::Open);
             child("Lock && eject", Act::Lock);  // "&&" renders as one "&"
             sep();
@@ -227,6 +229,7 @@ void Tray::rebuild_items()
             child("Unlock…", Act::Unlock);
             child("Show password hint", Act::ShowHint);
             sep();
+            child("Change password…", Act::ChangePw);
             if (d.admin_user)
                 child("Reset user password…", Act::ResetUserPw);
             child("Reset / Set up…", Act::Setup);

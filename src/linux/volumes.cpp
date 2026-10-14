@@ -143,11 +143,8 @@ std::vector<std::string> release_volumes(const UsbDevice& dev)
     return problems;
 }
 
-void power_off_drive(const UsbDevice& dev)
+void unmount_all(const UsbDevice& dev)
 {
-    if (dev.disks.empty())
-        throw IronKeyError("No disk to power off on port " + dev.port);
-
     std::vector<std::string> nodes;
     for (const auto& d : dev.disks)
         for (const auto& n : with_partitions(d.node))
@@ -164,6 +161,13 @@ void power_off_drive(const UsbDevice& dev)
                                (err.empty() ? "" : ": " + err) +
                                ". Close any files or windows using the drive and try again");
     }
+}
+
+void power_off_drive(const UsbDevice& dev)
+{
+    if (dev.disks.empty())
+        throw IronKeyError("No disk to power off on port " + dev.port);
+    unmount_all(dev);
 
     // Powering off the disk detaches the whole USB device; the drive locks
     // itself when it loses power.

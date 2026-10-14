@@ -3,6 +3,7 @@
 
 #include <cstdio>
 
+#include "agent/busy.h"
 #include "agent/notify.h"
 #include "linux/device_ops.h"
 #include "linux/usb_topology.h"
@@ -55,7 +56,7 @@ Agent::~Agent()
 void Agent::scan()
 {
     for (const auto& dev : find_kingston_devices())
-        if (dev.is_ironkey() && !dev.is_unlocked())
+        if (dev.is_ironkey() && !dev.is_unlocked() && !BusyPorts::contains(dev.port))
             start(dev.port);
 }
 
@@ -63,8 +64,9 @@ void Agent::on_event(const UsbEvent& ev)
 {
     if (ev.action == UsbEvent::Action::Add) {
         reap();
+        // A tray operation re-enumerating the drive owns it; don't prompt.
         if (ev.vid == kKingstonVid && looks_like_ironkey(ev.vid, ev.product) &&
-            !workers_.contains(ev.port))
+            !workers_.contains(ev.port) && !BusyPorts::contains(ev.port))
             start(ev.port);
         return;
     }
@@ -88,6 +90,8 @@ void Agent::on_event(const UsbEvent& ev)
 void Agent::request_unlock(const std::string& port)
 {
     reap();
+    if (BusyPorts::contains(port))
+        return;
     auto it = workers_.find(port);
     if (it != workers_.end()) {
         // A finished worker is just waiting for unplug; restart it so the user
@@ -98,6 +102,15 @@ void Agent::request_unlock(const std::string& port)
         stop(port);
     }
     start(port);
+}
+
+void Agent::dismiss_prompt(const std::string& port)
+{
+    auto it = workers_.find(port);
+    if (it != workers_.end() && it->second->state == State::Prompting) {
+        log(port, "Closing the password prompt for another action");
+        stop(port);
+    }
 }
 
 void Agent::reap()
@@ -148,6 +161,9 @@ void Agent::run(Worker& w, const std::string& port, DryRun dry_run,
     // Give udisks and the desktop a moment to mount the device's CD-ROM,
     // so we release it after rather than racing with the automount.
     if (!sleep_unless_cancelled(w.cancelled, 2000))
+        return finish(State::Gone);
+    // A tray operation may have claimed the drive meanwhile.
+    if (BusyPorts::contains(port))
         return finish(State::Gone);
 
     UsbDevice dev;

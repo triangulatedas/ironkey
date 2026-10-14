@@ -14,6 +14,7 @@
 #include <thread>
 
 #include "agent/agent.h"
+#include "agent/busy.h"
 #include "agent/notify.h"
 #include "agent/password_dialog.h"
 #include "agent/tray.h"
@@ -94,6 +95,12 @@ int main(int argc, char** argv)
                     for (auto& d : find_kingston_devices()) {
                         if (!d.is_ironkey())
                             continue;
+                        // Mid-operation: reading it would talk over the op.
+                        if (BusyPorts::contains(d.port)) {
+                            out.push_back({d.port, describe(d), d.is_unlocked(), false,
+                                           "Working… please wait", true});
+                            continue;
+                        }
                         // One non-disruptive read per drive (SCSI when locked in
                         // storage mode); the host asks only on menu open.
                         DeviceSummary s = read_device_summary(d);
@@ -139,25 +146,29 @@ int main(int argc, char** argv)
                     }
                 },
             .setup =
-                [dry = dry_run != Agent::DryRun::Off](std::string port) {
+                [&agent, dry = dry_run != Agent::DryRun::Off](std::string port) {
+                    agent.dismiss_prompt(port);
                     // The wizard blocks on zenity dialogs, so it must not run on
                     // the event-loop thread. It is self-contained, so detach it.
                     std::thread(run_setup_wizard, std::move(port), dry).detach();
                 },
             .open = [](std::string port) { std::thread(open_data_disk, std::move(port)).detach(); },
             .change_pw =
-                [](std::string port) {
+                [&agent](std::string port) {
+                    agent.dismiss_prompt(port);
                     std::thread(run_change_password_op, std::move(port)).detach();
                 },
             .format = [](std::string port) { std::thread(run_format_op, std::move(port)).detach(); },
             .reset_user_pw =
-                [](std::string port) {
+                [&agent](std::string port) {
+                    agent.dismiss_prompt(port);
                     std::thread(run_reset_user_password_op, std::move(port)).detach();
                 },
             .quit = [&quit] { quit = true; },
         });
         tray.start();
 
+        unsigned busy_seen = BusyPorts::generation();
         for (;;) {
             pollfd fds[3] = {{monitor.fd(), POLLIN, 0}, {sfd, POLLIN, 0}, {-1, 0, 0}};
             nfds_t nfds = 2;
@@ -174,9 +185,14 @@ int main(int argc, char** argv)
             if (fds[0].revents & POLLIN)
                 while (auto ev = monitor.receive()) {
                     agent.on_event(*ev);
-                    devices_changed = true;
+                    if (ev->vid == kKingstonVid)
+                        devices_changed = true;
                 }
             agent.reap();
+            if (unsigned g = BusyPorts::generation(); g != busy_seen) {
+                busy_seen = g;
+                devices_changed = true;  // an operation started or finished
+            }
             if (tray.active()) {
                 tray.process();  // serve menu/property calls, run menu actions
                 if (devices_changed)

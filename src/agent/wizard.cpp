@@ -15,6 +15,7 @@
 #include <string_view>
 #include <vector>
 
+#include "agent/busy.h"
 #include "agent/notify.h"
 #include "linux/device_ops.h"
 #include "linux/usb_topology.h"
@@ -370,6 +371,13 @@ bool collect_via_zenity(const UsbDevice& dev, SetupRequest& req)
 
 void perform_setup(const std::string& port, const std::string& desc, SetupRequest& req)
 {
+    // The reset re-enumerates the drive (and the format step switches it to HID
+    // and unlocks it); keep the agent's own unlock prompt off it until done.
+    BusyPorts::Guard busy(port);
+    if (!busy.owns()) {
+        notify("IronKey", "Another operation is already running on this drive.", true);
+        return;
+    }
     notify("IronKey", "Resetting " + desc + "… this takes a few seconds.");
     UsbDevice fresh;
     if (!find_drive(port, fresh)) {
@@ -529,6 +537,13 @@ void run_change_password_op(std::string port)
     if (admin_user)
         account = (acc == "admin") ? Account::Admin : Account::User;
 
+    BusyPorts::Guard busy(port);
+    if (!busy.owns()) {
+        notify("IronKey", "Another operation is already running on this drive.", true);
+        wipe(old_pw);
+        wipe(new_pw);
+        return;
+    }
     try {
         UsbDevice fresh;
         if (!find_drive(port, fresh))
@@ -582,6 +597,13 @@ void run_reset_user_password_op(std::string port)
             new_user = v;
     }
     secure_wipe(c.out.data(), c.out.capacity());
+    BusyPorts::Guard busy(port);
+    if (!busy.owns()) {
+        notify("IronKey", "Another operation is already running on this drive.", true);
+        wipe(admin);
+        wipe(new_user);
+        return;
+    }
     try {
         UsbDevice fresh;
         if (!find_drive(port, fresh))
@@ -632,6 +654,11 @@ void run_format_op(std::string port)
     }
     if (fstype != "exfat" && fstype != "vfat" && fstype != "ext4")
         return;
+    BusyPorts::Guard busy(port);
+    if (!busy.owns()) {
+        notify("IronKey", "Another operation is already running on this drive.", true);
+        return;
+    }
     try {
         UsbDevice fresh;
         if (!find_drive(port, fresh) || !fresh.is_unlocked())

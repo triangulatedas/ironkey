@@ -39,6 +39,9 @@ public:
     // Starts (or restarts) the unlock flow for a drive on demand, e.g. from the
     // tray's Unlock item. No-op if a worker is already busy on that port.
     void request_unlock(const std::string& port);
+    // Closes the drive's pending password prompt, if one is open: the user
+    // picked another tray action (reset, change password, …) for it instead.
+    void dismiss_prompt(const std::string& port);
     // Closes open dialogs and waits for all workers.
     void shutdown();
 

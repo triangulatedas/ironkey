@@ -19,7 +19,8 @@ struct UsbEvent {
 };
 
 // Receives USB device add/remove events from udev, after udev rules
-// (including uaccess) have been applied.
+// (including uaccess) have been applied, plus Action::Other events on a
+// Kingston drive's port when its disk changes (e.g. unlocked or locked).
 class UdevMonitor {
 public:
     UdevMonitor();

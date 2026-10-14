@@ -728,6 +728,12 @@ int run_changepw(const char* label, const char* accounts)
     g_free(m);
     gtk_label_set_xalign(GTK_LABEL(heading), 0.0f);
     gtk_box_pack_start(GTK_BOX(box), heading, FALSE, FALSE, 0);
+    GtkWidget* keep = gtk_label_new(nullptr);
+    gtk_label_set_markup(GTK_LABEL(keep),
+                         "<small>The files on the drive are kept. If it is unlocked, it "
+                         "is locked first.</small>");
+    gtk_label_set_xalign(GTK_LABEL(keep), 0.0f);
+    gtk_box_pack_start(GTK_BOX(box), keep, FALSE, FALSE, 0);
 
     GtkWidget* account_combo = nullptr;
     if (accounts && std::strcmp(accounts, "adminuser") == 0) {

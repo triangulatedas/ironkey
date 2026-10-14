@@ -374,9 +374,8 @@ int cmd_change_password(const std::string& port, std::optional<Account> requeste
         std::fprintf(stderr, "New passwords do not match; nothing was changed.\n");
         return 1;
     }
-    if (new_pw.value.empty() || new_pw.value.size() > kMaxPasswordBytes) {
-        std::fprintf(stderr, "New password must be 1 to 16 bytes (passphrase mode is not "
-                             "supported yet); nothing was changed.\n");
+    if (new_pw.value.empty() || new_pw.value.size() > kMaxPassphraseBytes) {
+        std::fprintf(stderr, "New password must be 1 to 64 characters; nothing was changed.\n");
         return 1;
     }
 
