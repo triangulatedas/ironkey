@@ -21,6 +21,7 @@
 #include "linux/volumes.h"
 #include "proto/session.h"
 #include "proto/tracing_device.h"
+#include "version.h"
 
 using namespace ironkey;
 
@@ -797,6 +798,17 @@ int cmd_reset(const std::string& port, bool password_stdin, std::optional<bool> 
     return 0;
 }
 
+int cmd_version()
+{
+    std::printf("ironkey-unlock %s\n"
+                "%s\n"
+                "License GPLv2: GNU GPL version 2 only <https://www.gnu.org/licenses/gpl-2.0.html>.\n"
+                "This is free software: you are free to change and redistribute it.\n"
+                "There is NO WARRANTY, to the extent permitted by law.\n",
+                IRONKEY_VERSION_FULL, IRONKEY_COMPANY);
+    return 0;
+}
+
 void usage()
 {
     std::puts(
@@ -837,6 +849,7 @@ void usage()
         "  dump [--no-session]        Diagnostic: dump the drive's config/status queries,\n"
         "                             before and after a key exchange. Sends no password.\n"
         "                             --no-session skips the key exchange\n"
+        "  version                    Show the version and license (also --version)\n"
         "\n"
         "--device PORT selects a drive by USB port (see 'list') when several are connected.");
 }
@@ -846,6 +859,8 @@ void usage()
 int main(int argc, char** argv)
 {
     std::string_view cmd = argc > 1 ? argv[1] : "list";
+    if (cmd == "version" || cmd == "--version" || cmd == "-V")
+        return cmd_version();
     std::string port;
     bool password_stdin = false;
     bool trace = false;

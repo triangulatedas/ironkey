@@ -41,6 +41,7 @@ public:
         std::function<void(std::string port)> change_pw;  // user picked Change password
         std::function<void(std::string port)> format;     // user picked Format
         std::function<void(std::string port)> reset_user_pw;  // admin resets user password
+        std::function<void()> about;                       // user picked About
         std::function<void()> quit;                        // user picked Quit
     };
 
@@ -70,7 +71,7 @@ private:
     // layout request. A Submenu item carries children; the root is a Submenu.
     enum class Kind { Action, Separator, Submenu };
     enum class Act {
-        Unlock, Lock, ShowHint, Setup, Open, ChangePw, Format, ResetUserPw, Quit, None
+        Unlock, Lock, ShowHint, Setup, Open, ChangePw, Format, ResetUserPw, About, Quit, None
     };
     struct Item {
         int id;

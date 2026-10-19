@@ -22,6 +22,7 @@
 #include "linux/device_ops.h"
 #include "linux/udev_monitor.h"
 #include "linux/usb_topology.h"
+#include "version.h"
 
 using namespace ironkey;
 
@@ -39,8 +40,13 @@ int main(int argc, char** argv)
             account = Account::User;
         } else if (arg == "--admin") {
             account = Account::Admin;
+        } else if (arg == "--version" || arg == "-V") {
+            std::printf("ironkey-agent %s\n%s. License: GPL-2.0-only.\n",
+                        IRONKEY_VERSION_FULL, IRONKEY_COMPANY);
+            return 0;
         } else if (arg == "-h" || arg == "--help") {
-            std::puts("Usage: ironkey-agent [--admin | --user] [--dry-run | --dry-run=fail]\n\n"
+            std::puts("Usage: ironkey-agent [--admin | --user] [--dry-run | --dry-run=fail]\n"
+                      "       ironkey-agent --version\n\n"
                       "Waits for Kingston IronKey drives to be plugged in and asks for the\n"
                       "password to unlock them. Normally started by systemd as a user service.\n\n"
                       "  --admin, --user\n"
@@ -76,7 +82,8 @@ int main(int argc, char** argv)
         // Monitor first, then scan, so no device slips between the two.
         UdevMonitor monitor;
         Agent agent(dry_run, account);
-        std::fprintf(stderr, "ironkey-agent started%s (login: %s, dialogs: %s)\n",
+        std::fprintf(stderr, "ironkey-agent %s started%s (login: %s, dialogs: %s)\n",
+                     IRONKEY_VERSION,
                      dry_run == Agent::DryRun::Off    ? ""
                      : dry_run == Agent::DryRun::Fail ? " in DRY RUN (fail) mode"
                                                       : " in DRY RUN mode",
@@ -164,6 +171,7 @@ int main(int argc, char** argv)
                     agent.dismiss_prompt(port);
                     std::thread(run_reset_user_password_op, std::move(port)).detach();
                 },
+            .about = [] { std::thread(show_about).detach(); },
             .quit = [&quit] { quit = true; },
         });
         tray.start();

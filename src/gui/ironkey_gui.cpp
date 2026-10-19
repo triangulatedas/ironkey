@@ -10,11 +10,16 @@
 // Usage:
 //   ironkey-gui unlock --label TEXT [--accounts single|adminuser] [--note TEXT]
 //   ironkey-gui setup  --label TEXT
+//   ironkey-gui about
+//   ironkey-gui --version
 #include <gtk/gtk.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
+
+#include "version.h"
 
 namespace {
 
@@ -893,13 +898,155 @@ int run_resetuserpw(const char* label)
     return rc;
 }
 
+// ================================ about =====================================
+
+// The app logo, drawn with cairo so there is no image file to install: a gold
+// padlock on a navy-to-teal tile, over a faint low-poly (triangulated) mesh.
+GdkPixbuf* make_logo(int size)
+{
+    cairo_surface_t* surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+    cairo_t* cr = cairo_create(surf);
+    cairo_scale(cr, size / 128.0, size / 128.0);
+
+    auto rounded = [cr](double x, double y, double w, double h, double r) {
+        cairo_new_sub_path(cr);
+        cairo_arc(cr, x + w - r, y + r, r, -M_PI / 2, 0);
+        cairo_arc(cr, x + w - r, y + h - r, r, 0, M_PI / 2);
+        cairo_arc(cr, x + r, y + h - r, r, M_PI / 2, M_PI);
+        cairo_arc(cr, x + r, y + r, r, M_PI, 3 * M_PI / 2);
+        cairo_close_path(cr);
+    };
+
+    // Tile.
+    rounded(4, 4, 120, 120, 26);
+    cairo_pattern_t* bg = cairo_pattern_create_linear(0, 0, 128, 128);
+    cairo_pattern_add_color_stop_rgb(bg, 0, 0.04, 0.12, 0.23);  // #0a1f3a
+    cairo_pattern_add_color_stop_rgb(bg, 1, 0.05, 0.46, 0.56);  // #0e758f
+    cairo_set_source(cr, bg);
+    cairo_fill_preserve(cr);
+    cairo_pattern_destroy(bg);
+
+    // Triangulated mesh, clipped to the tile: a jittered 5x5 grid, each cell
+    // split into two triangles of slightly different brightness.
+    cairo_save(cr);
+    cairo_clip(cr);
+    double vx[6][6], vy[6][6];
+    for (int j = 0; j <= 5; ++j)
+        for (int i = 0; i <= 5; ++i) {
+            bool edge = i == 0 || j == 0 || i == 5 || j == 5;
+            unsigned h = (i * 73856093u) ^ (j * 19349663u);
+            vx[j][i] = i * 25.6 + (edge ? 0 : static_cast<int>(h % 13) - 6);
+            vy[j][i] = j * 25.6 + (edge ? 0 : static_cast<int>((h >> 8) % 13) - 6);
+        }
+    for (int j = 0; j < 5; ++j)
+        for (int i = 0; i < 5; ++i)
+            for (int t = 0; t < 2; ++t) {
+                unsigned h = (i * 2654435761u) ^ (j * 40503u) ^ (t * 977u);
+                cairo_move_to(cr, vx[j][i], vy[j][i]);
+                if (t == 0) {
+                    cairo_line_to(cr, vx[j][i + 1], vy[j][i + 1]);
+                    cairo_line_to(cr, vx[j + 1][i + 1], vy[j + 1][i + 1]);
+                } else {
+                    cairo_line_to(cr, vx[j + 1][i + 1], vy[j + 1][i + 1]);
+                    cairo_line_to(cr, vx[j + 1][i], vy[j + 1][i]);
+                }
+                cairo_close_path(cr);
+                cairo_set_source_rgba(cr, 1, 1, 1, 0.02 + (h % 7) * 0.012);
+                cairo_fill_preserve(cr);
+                cairo_set_source_rgba(cr, 1, 1, 1, 0.06);
+                cairo_set_line_width(cr, 0.6);
+                cairo_stroke(cr);
+            }
+    cairo_restore(cr);
+
+    // Shackle.
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_set_line_width(cr, 9);
+    cairo_move_to(cr, 44, 64);
+    cairo_line_to(cr, 44, 50);
+    cairo_arc(cr, 64, 50, 20, M_PI, 2 * M_PI);
+    cairo_line_to(cr, 84, 64);
+    cairo_set_source_rgb(cr, 0.90, 0.93, 0.96);
+    cairo_stroke(cr);
+
+    // Body shadow, then the gold body.
+    rounded(35, 62, 58, 46, 10);
+    cairo_set_source_rgba(cr, 0, 0, 0, 0.30);
+    cairo_fill(cr);
+    rounded(35, 58, 58, 46, 10);
+    cairo_pattern_t* gold = cairo_pattern_create_linear(0, 58, 0, 104);
+    cairo_pattern_add_color_stop_rgb(gold, 0, 0.99, 0.85, 0.36);  // #fdd95c
+    cairo_pattern_add_color_stop_rgb(gold, 1, 0.92, 0.55, 0.05);  // #eb8c0d
+    cairo_set_source(cr, gold);
+    cairo_fill(cr);
+    cairo_pattern_destroy(gold);
+    // Top highlight.
+    cairo_set_source_rgba(cr, 1, 1, 1, 0.35);
+    cairo_set_line_width(cr, 2);
+    cairo_move_to(cr, 44, 60.5);
+    cairo_line_to(cr, 84, 60.5);
+    cairo_stroke(cr);
+
+    // Keyhole.
+    cairo_set_source_rgb(cr, 0.04, 0.12, 0.23);
+    cairo_arc(cr, 64, 76, 7, 0, 2 * M_PI);
+    cairo_fill(cr);
+    cairo_move_to(cr, 60.5, 79);
+    cairo_line_to(cr, 67.5, 79);
+    cairo_line_to(cr, 69, 94);
+    cairo_line_to(cr, 59, 94);
+    cairo_close_path(cr);
+    cairo_fill(cr);
+
+    cairo_destroy(cr);
+    GdkPixbuf* pb = gdk_pixbuf_get_from_surface(surf, 0, 0, size, size);
+    cairo_surface_destroy(surf);
+    return pb;
+}
+
+int run_about()
+{
+    GdkPixbuf* logo = make_logo(128);
+    GdkPixbuf* icon = make_logo(48);
+    gtk_window_set_default_icon(icon);
+
+    GtkWidget* d = gtk_about_dialog_new();
+    GtkAboutDialog* a = GTK_ABOUT_DIALOG(d);
+    gtk_about_dialog_set_program_name(a, "ironkey");
+    gtk_about_dialog_set_version(a, IRONKEY_VERSION_FULL);
+    gtk_about_dialog_set_logo(a, logo);
+    gtk_about_dialog_set_comments(
+        a, "Unlock and manage Kingston IronKey Locker+ G2 encrypted drives on Linux.\n\n"
+           "Not affiliated with or endorsed by Kingston Technology.");
+    gtk_about_dialog_set_copyright(a, IRONKEY_COMPANY);
+    gtk_about_dialog_set_license_type(a, GTK_LICENSE_GPL_2_0_ONLY);
+    gtk_about_dialog_set_website(a, IRONKEY_HOMEPAGE);
+    gtk_about_dialog_set_website_label(a, "Project home page");
+    const char* authors[] = {IRONKEY_COMPANY, nullptr};
+    gtk_about_dialog_set_authors(a, authors);
+    const char* inspired[] = {"ironkey-unlocker https://github.com/wltechblog/ironkey-unlocker",
+                              nullptr};
+    gtk_about_dialog_add_credit_section(a, "Inspired by", inspired);
+
+    gtk_dialog_run(GTK_DIALOG(d));
+    gtk_widget_destroy(d);
+    g_object_unref(logo);
+    g_object_unref(icon);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
 {
+    if (argc >= 2 && (std::strcmp(argv[1], "--version") == 0 || std::strcmp(argv[1], "-V") == 0)) {
+        std::printf("ironkey-gui %s\n%s. License: GPL-2.0-only.\n",
+                    IRONKEY_VERSION_FULL, IRONKEY_COMPANY);
+        return 0;
+    }
     gtk_init(&argc, &argv);
     if (argc < 2) {
-        std::fprintf(stderr, "usage: ironkey-gui unlock|setup --label TEXT ...\n");
+        std::fprintf(stderr, "usage: ironkey-gui unlock|setup --label TEXT ... | about | --version\n");
         return 2;
     }
     const char* label = arg_value(argc, argv, "--label");
@@ -914,6 +1061,8 @@ int main(int argc, char** argv)
         return run_changepw(label, arg_value(argc, argv, "--accounts"));
     if (std::strcmp(argv[1], "resetuserpw") == 0)
         return run_resetuserpw(label);
+    if (std::strcmp(argv[1], "about") == 0)
+        return run_about();
     std::fprintf(stderr, "ironkey-gui: unknown command '%s'\n", argv[1]);
     return 2;
 }

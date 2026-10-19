@@ -21,6 +21,7 @@
 #include "linux/volumes.h"
 #include "proto/bytes.h"
 #include "proto/session.h"
+#include "version.h"
 
 extern char** environ;
 
@@ -496,6 +497,15 @@ void run_format_op(std::string port)
     } catch (const std::exception& e) {
         notify("IronKey", std::string("Format failed: ") + e.what(), true);
     }
+}
+
+void show_about()
+{
+    Captured c = spawn_capture(find_gui(), {"about"});
+    if (!c.spawned || c.exit_code == 127)
+        notify("IronKey", "IronKey " IRONKEY_VERSION_FULL ", " IRONKEY_COMPANY
+                          ". Licensed under the GNU GPL v2. Install ironkey-gui for the full "
+                          "About dialog.");
 }
 
 }  // namespace ironkey

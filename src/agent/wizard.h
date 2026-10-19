@@ -24,5 +24,7 @@ void run_change_password_op(std::string port);
 void run_format_op(std::string port);
 // Admin resets the user password (GTK dialog → reset_user_password_device).
 void run_reset_user_password_op(std::string port);
+// Show the About dialog (ironkey-gui about): name, version, license, company.
+void show_about();
 
 }  // namespace ironkey

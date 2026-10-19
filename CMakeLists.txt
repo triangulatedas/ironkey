@@ -29,6 +29,10 @@ if(NOT IRONKEY_GIT_COUNT)
 endif()
 message(STATUS "ironkey version: ${PROJECT_VERSION}-${IRONKEY_GIT_COUNT} (g${IRONKEY_GIT_SHA})")
 
+# version.h (IRONKEY_VERSION etc.) for --version and the About dialog.
+set(IRONKEY_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+configure_file(src/version.h.in "${IRONKEY_GENERATED_DIR}/version.h" @ONLY)
+
 find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(UDEV REQUIRED IMPORTED_TARGET libudev)
@@ -44,7 +48,7 @@ add_library(ironkey_proto STATIC
     src/proto/session.cpp
     src/proto/tracing_device.cpp
 )
-target_include_directories(ironkey_proto PUBLIC src)
+target_include_directories(ironkey_proto PUBLIC src ${IRONKEY_GENERATED_DIR})
 target_link_libraries(ironkey_proto PUBLIC OpenSSL::Crypto)
 target_compile_options(ironkey_proto PRIVATE ${IRONKEY_WARNINGS})
 
@@ -83,6 +87,7 @@ pkg_check_modules(GTK3 IMPORTED_TARGET gtk+-3.0)
 if(GTK3_FOUND)
     add_executable(ironkey-gui src/gui/ironkey_gui.cpp)
     target_link_libraries(ironkey-gui PRIVATE PkgConfig::GTK3)
+    target_include_directories(ironkey-gui PRIVATE ${IRONKEY_GENERATED_DIR})
     target_compile_options(ironkey-gui PRIVATE -Wall -Wextra)
     install(TARGETS ironkey-gui RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT gui)
     message(STATUS "ironkey-gui: building GTK3 front-end (${GTK3_VERSION})")

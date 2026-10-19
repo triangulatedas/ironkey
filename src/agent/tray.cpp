@@ -242,6 +242,7 @@ void Tray::rebuild_items()
         items_.push_back(std::move(none));
     }
     items_.push_back({90, Kind::Separator, "", "", Act::None, true, {}});
+    items_.push_back({2, Kind::Action, "About IronKey…", "", Act::About, true, {}});
     items_.push_back({1, Kind::Action, "Quit", "", Act::Quit, true, {}});
 }
 
@@ -464,6 +465,10 @@ int Tray::menu_event(sd_bus_message* m, void* userdata, sd_bus_error*)
             case Act::ResetUserPw:
                 if (self->cb_.reset_user_pw)
                     self->cb_.reset_user_pw(it->port);
+                break;
+            case Act::About:
+                if (self->cb_.about)
+                    self->cb_.about();
                 break;
             case Act::Quit:
                 if (self->cb_.quit)
